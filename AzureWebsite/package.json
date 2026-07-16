@@ -3,9 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "start": "node ./bin/www"
+    "start": "node ./bin/www",
+    "test": "node --test",
+    "privacy:scan": "node ./scripts/privacy-scan.js",
+    "check": "npm test && npm run privacy:scan"
   },
   "dependencies": {
+    "@phosphor-icons/web": "^2.1.2",
     "cookie-parser": "~1.4.4",
     "debug": "~2.6.9",
     "ejs": "^6.0.1",

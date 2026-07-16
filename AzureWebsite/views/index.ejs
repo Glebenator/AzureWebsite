@@ -1,18 +1,115 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
   <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="theme-color" content="#faf8f2">
     <title><%= title %></title>
-    <link rel='stylesheet' href='/stylesheets/style.css' />
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <script src="/javascripts/site.js" defer></script>
   </head>
   <body>
-    <main class="hero">
-      <p class="eyebrow">Welcome aboard</p>
-      <h1>Hi there! You’re in <%= title %></h1>
-      <p class="lead">
-        Thanks for visiting. This little app is ready to help you explore your ideas,
-        connect with others, and enjoy a calm, welcoming experience.
-      </p>
-      <a class="cta" href="/users">Meet the community</a>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="#top"><%= portfolio.person.name %></a>
+      <nav class="primary-nav" aria-label="Primary navigation">
+        <a class="nav-link is-active" href="#work">Work</a>
+        <a class="nav-link" href="#about">About</a>
+        <% portfolio.social.forEach(function(link) { %>
+          <a class="nav-link" href="<%= link.url %>" target="_blank" rel="noopener noreferrer"><%= link.label %></a>
+        <% }); %>
+      </nav>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title">
+            <span>Gleb</span>
+            <span>Gladyshevskiy</span>
+          </h1>
+          <span class="accent-rule" aria-hidden="true"></span>
+          <p><%= portfolio.person.headline %></p>
+        </div>
+        <div class="hero-visual" aria-hidden="true">
+          <img src="/images/hero-systems-diagram.png" width="800" height="480" alt="" fetchpriority="high">
+        </div>
+      </section>
+
+      <section class="work" id="work" aria-labelledby="work-title">
+        <h2 class="visually-hidden" id="work-title">Selected work</h2>
+        <ol class="project-list">
+          <% portfolio.projects.forEach(function(project, index) { var expanded = project.featured; %>
+            <li class="project <%= expanded ? 'is-open' : '' %>" data-project="<%= project.slug %>">
+              <article>
+                <div class="project-row">
+                  <button
+                    class="project-toggle"
+                    type="button"
+                    aria-expanded="<%= expanded ? 'true' : 'false' %>"
+                    aria-controls="project-panel-<%= project.slug %>"
+                  >
+                    <i class="ph ph-caret-down" aria-hidden="true"></i>
+                    <span class="visually-hidden">Toggle <%= project.featured ? 'project visual' : 'details' %> for <%= project.name %></span>
+                  </button>
+                  <p class="project-number" aria-hidden="true"><%= String(index + 1).padStart(2, '0') %></p>
+                  <h3><%= project.name %></h3>
+                  <div class="project-summary">
+                    <p><%= project.summary %></p>
+                    <ul class="technology-list" aria-label="Technologies used">
+                      <% project.technologies.forEach(function(technology) { %>
+                        <li><%= technology %></li>
+                      <% }); %>
+                    </ul>
+                  </div>
+                  <a
+                    class="project-action"
+                    href="<%= project.actions.github.url %>"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="<%= project.actions.github.label %>: <%= project.name %>"
+                  >
+                    <span><%= project.actions.github.label %></span>
+                    <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+                  </a>
+                </div>
+                <div
+                  class="project-panel"
+                  id="project-panel-<%= project.slug %>"
+                  <%= expanded ? '' : 'hidden' %>
+                >
+                  <% if (project.featured) { %>
+                    <img src="/images/project-reveal.png" width="1400" height="240" alt="" loading="eager">
+                    <p class="visually-hidden"><%= project.detail %></p>
+                  <% } else { %>
+                    <p><%= project.detail %></p>
+                  <% } %>
+                </div>
+              </article>
+            </li>
+          <% }); %>
+        </ol>
+      </section>
+
+      <section class="about" id="about" aria-labelledby="about-title">
+        <div>
+          <h2 class="visually-hidden" id="about-title">About</h2>
+          <p><%= portfolio.person.about %></p>
+          <p><%= portfolio.person.closing %></p>
+        </div>
+        <span class="about-divider" aria-hidden="true"></span>
+        <button class="motion-toggle" type="button" aria-pressed="false" aria-describedby="motion-status">
+          <i class="ph ph-circle-half" aria-hidden="true"></i>
+          <span>Reduce motion</span>
+        </button>
+        <span class="visually-hidden" id="motion-status" aria-live="polite">Motion is enabled.</span>
+      </section>
     </main>
   </body>
 </html>

@@ -5,22 +5,38 @@ var cookieParser = require('cookie-parser');
 var logger = require('morgan');
 
 var indexRouter = require('./routes/index');
-var usersRouter = require('./routes/users');
 
 var app = express();
+
+app.disable('x-powered-by');
+app.set('env', process.env.NODE_ENV === 'development' ? 'development' : 'production');
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'ejs');
 
-app.use(logger('dev'));
+logger.token('safe-path', function(req) {
+  return req.path;
+});
+
+app.use(logger(':method :safe-path :status :response-time ms'));
+app.use(function(req, res, next) {
+  res.set({
+    'Content-Security-Policy': "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'self'; object-src 'none'; script-src 'self'; style-src 'self'",
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY'
+  });
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/icons', express.static(path.join(__dirname, 'node_modules/@phosphor-icons/web/src')));
 
 app.use('/', indexRouter);
-app.use('/users', usersRouter);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {
@@ -29,13 +45,21 @@ app.use(function(req, res, next) {
 
 // error handler
 app.use(function(err, req, res, next) {
-  // set locals, only providing error in development
-  res.locals.message = err.message;
-  res.locals.error = req.app.get('env') === 'development' ? err : {};
+  var status = err.status || 500;
 
-  // render the error page
-  res.status(err.status || 500);
-  res.render('error');
+  if (status >= 500) {
+    console.error(err);
+  }
+
+  res.status(status);
+  res.render('error', {
+    title: status === 404 ? 'Page not found' : 'Something went wrong',
+    status: status,
+    heading: status === 404 ? 'This page is off the map.' : 'The signal dropped.',
+    message: status === 404
+      ? 'The page you requested does not exist.'
+      : 'Please try again in a moment.'
+  });
 });
 
 module.exports = app;
