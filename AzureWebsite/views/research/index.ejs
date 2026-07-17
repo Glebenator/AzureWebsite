@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <nav class="primary-nav research-nav" aria-label="Primary navigation">
+        <a class="nav-link" href="/">Home</a>
+        <a class="nav-link is-active" href="/research" aria-current="page">Research</a>
+      </nav>
+    </header>
+
+    <main id="main-content" class="research-main">
+      <header class="research-hero">
+        <p class="research-kicker">Research archive</p>
+        <h1>Notes for looking closer.</h1>
+        <p class="research-intro">Long-form investigations across health, technology, engineering, and culture. Read-only, sourced, and kept close to the original research.</p>
+        <aside class="research-disclaimer" aria-label="Important research note">
+          <i class="ph ph-info" aria-hidden="true"></i>
+          <p>Research, not medical advice. Health decisions belong with a qualified clinician who knows your circumstances.</p>
+        </aside>
+      </header>
+
+      <section class="research-library" aria-labelledby="library-title">
+        <div class="research-library-heading">
+          <h2 id="library-title">Library</h2>
+          <p><%= articles.length %> <%= articles.length === 1 ? 'entry' : 'entries' %></p>
+        </div>
+
+        <% if (articles.length === 0) { %>
+          <div class="research-state" role="status">
+            <i class="ph ph-books" aria-hidden="true"></i>
+            <h3>The shelf is being prepared.</h3>
+            <p>No research notes are available yet. Please check back soon.</p>
+          </div>
+        <% } else { %>
+          <ol class="research-list">
+            <% articles.forEach(function(article, index) { %>
+              <li>
+                <article class="research-row">
+                  <p class="research-number" aria-hidden="true"><%= String(index + 1).padStart(2, '0') %></p>
+                  <div class="research-row-copy">
+                    <h3><a href="/research/<%= article.slug %>"><%= article.title %></a></h3>
+                    <% if (article.excerpt) { %><p><%= article.excerpt %></p><% } %>
+                  </div>
+                  <div class="research-row-meta">
+                    <% if (article.displayDate) { %><time datetime="<%= article.modifiedAt || article.createdAt %>"><%= article.displayDate %></time><% } %>
+                    <span><%= article.readingMinutes %> min read</span>
+                    <a href="/research/<%= article.slug %>" aria-label="Read <%= article.title %>">
+                      <span>Read</span>
+                      <i class="ph ph-arrow-right" aria-hidden="true"></i>
+                    </a>
+                  </div>
+                </article>
+              </li>
+            <% }); %>
+          </ol>
+        <% } %>
+      </section>
+    </main>
+  </body>
+</html>

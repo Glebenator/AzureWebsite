@@ -9,12 +9,17 @@
     "check": "npm test && npm run privacy:scan"
   },
   "dependencies": {
+    "@azure/identity": "^4.13.1",
+    "@azure/storage-blob": "^12.33.0",
     "@phosphor-icons/web": "^2.1.2",
     "cookie-parser": "~1.4.4",
     "debug": "~2.6.9",
     "ejs": "^6.0.1",
     "express": "^4.22.2",
+    "gray-matter": "^4.0.3",
     "http-errors": "~1.6.3",
-    "morgan": "^1.11.0"
+    "markdown-it": "^14.3.0",
+    "morgan": "^1.11.0",
+    "sanitize-html": "^2.17.6"
   }
 }

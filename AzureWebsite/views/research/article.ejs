@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <nav class="primary-nav research-nav" aria-label="Primary navigation">
+        <a class="nav-link" href="/">Home</a>
+        <a class="nav-link is-active" href="/research" aria-current="page">Research</a>
+      </nav>
+    </header>
+
+    <main id="main-content" class="article-main">
+      <nav class="article-breadcrumb" aria-label="Breadcrumb">
+        <a href="/research"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>All research</span></a>
+      </nav>
+
+      <article>
+        <header class="article-header">
+          <p class="research-kicker">Research note</p>
+          <h1><%= article.title %></h1>
+          <div class="article-metadata">
+            <% if (article.displayModifiedAt) { %>
+              <p>Updated <time datetime="<%= article.modifiedAt %>"><%= article.displayModifiedAt %></time></p>
+            <% } else if (article.displayCreatedAt) { %>
+              <p>Created <time datetime="<%= article.createdAt %>"><%= article.displayCreatedAt %></time></p>
+            <% } %>
+            <p><%= article.readingMinutes %> min read</p>
+            <% if (article.sourceUrl) { %>
+              <a href="<%= article.sourceUrl %>" target="_blank" rel="noopener noreferrer">
+                <span>Original source</span>
+                <i class="ph ph-arrow-up-right" aria-hidden="true"></i>
+              </a>
+            <% } %>
+          </div>
+          <aside class="research-disclaimer" aria-label="Important research note">
+            <i class="ph ph-info" aria-hidden="true"></i>
+            <p>Research, not medical advice. Consult a qualified clinician for personal health decisions.</p>
+          </aside>
+        </header>
+
+        <div class="article-layout">
+          <div class="article-rail" aria-hidden="true">
+            <span>Research</span>
+          </div>
+          <div class="research-prose"><%- article.html %></div>
+        </div>
+      </article>
+
+      <footer class="article-footer">
+        <a class="text-link" href="/research"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to the library</span></a>
+      </footer>
+    </main>
+  </body>
+</html>

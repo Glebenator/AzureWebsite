@@ -18,9 +18,10 @@
 
     <header class="site-header" aria-label="Primary">
       <a class="wordmark" href="#top"><%= portfolio.person.name %></a>
-      <nav class="primary-nav" aria-label="Primary navigation">
-        <a class="nav-link is-active" href="#work">Work</a>
+      <nav class="primary-nav home-nav" aria-label="Primary navigation">
+        <a class="nav-link is-active" href="#work" aria-current="page">Work</a>
         <a class="nav-link" href="#about">About</a>
+        <a class="nav-link" href="/research">Research</a>
         <% portfolio.social.forEach(function(link) { %>
           <a class="nav-link" href="<%= link.url %>" target="_blank" rel="noopener noreferrer"><%= link.label %></a>
         <% }); %>
