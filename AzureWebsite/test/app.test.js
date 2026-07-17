@@ -9,6 +9,16 @@ const {
   createMarkdownRenderer,
   createResearchRepository
 } = require('../services/research-repository');
+const {
+  ResearchAssistantInvalidResponseError,
+  createResearchAssistant,
+  normalizeResponse
+} = require('../services/research-assistant');
+const {
+  buildDocuments,
+  indexDefinition,
+  markdownSections
+} = require('../scripts/index-research');
 
 async function withServer(run, application = app) {
   const server = application.listen(0);
@@ -119,6 +129,24 @@ test('all published destinations are HTTPS and placeholders remain null', () => 
   });
 });
 
+test('Azure App Service trusts exactly one platform proxy hop', () => {
+  const previousSiteName = process.env.WEBSITE_SITE_NAME;
+  process.env.WEBSITE_SITE_NAME = 'cvkewebsite';
+  try {
+    const azureApp = app.createApp();
+    assert.equal(azureApp.get('trust proxy'), 1);
+  } finally {
+    if (previousSiteName === undefined) {
+      delete process.env.WEBSITE_SITE_NAME;
+    } else {
+      process.env.WEBSITE_SITE_NAME = previousSiteName;
+    }
+  }
+
+  const localApp = app.createApp();
+  assert.equal(localApp.get('trust proxy'), false);
+});
+
 test('research index lists enumerated Markdown blobs with metadata', async () => {
   const repository = createResearchRepository({
     containerClient: createMockContainer({
@@ -135,6 +163,9 @@ test('research index lists enumerated Markdown blobs with metadata', async () =>
     assert.match(html, /A Useful Research Note/);
     assert.match(html, /1\s+entry/);
     assert.match(html, /research, not medical advice/i);
+    assert.match(html, /Ask across the archive/);
+    assert.match(html, /Source-grounded answers are being connected/);
+    assert.match(html, /data-assistant-available="false"/);
     assert.match(html, /href="\/research\/a-useful-research-note"/);
     assert.doesNotMatch(html, /private-drive-id/);
   }, researchApp);
@@ -204,6 +235,8 @@ test('research article renders Markdown and preserves safe source attribution', 
     assert.match(html, /On this page/);
     assert.match(html, /class="toc-group" data-toc-group="overview" open/);
     assert.match(html, /class="back-to-top" href="#main-content" data-back-to-top hidden/);
+    assert.match(html, /Ask this note/);
+    assert.match(html, /Scope: <strong>A Useful Research Note<\/strong>/);
     assert.match(html, /A <strong>focused<\/strong> research summary/);
     assert.match(html, /href="https:\/\/example\.com\/source"/);
     assert.match(html, /Original source/);
@@ -424,4 +457,234 @@ test('research storage failures return a useful public-safe state', async () => 
     assert.match(html, /temporarily out of reach/);
     assert.doesNotMatch(html, /mock storage failure|ResearchStorageError/);
   }, researchApp);
+});
+
+test('research assistant returns a citation-validated answer for the requested scope', async () => {
+  const repository = createResearchRepository({
+    containerClient: createMockContainer({
+      'a-useful-research-note.md': researchSource()
+    })
+  });
+  let capturedRetrieval = null;
+  let capturedGeneration = null;
+  const assistant = createResearchAssistant({
+    provider: {
+      async retrieve(request) {
+        capturedRetrieval = request;
+        return [{
+          id: 'chunk-1',
+          articleSlug: 'a-useful-research-note',
+          articleTitle: 'Provider-controlled title',
+          headingId: 'overview',
+          headingLabel: 'Provider-controlled heading',
+          excerpt: 'A focused research summary with useful context.',
+          content: 'A focused research summary with useful context.',
+          sourceEtag: 'etag-a-useful-research-note.md'
+        }];
+      },
+      async generate(request) {
+        capturedGeneration = request;
+        return {
+          status: 'answered',
+          answer: 'The note describes a focused research summary. [1]',
+          followUps: ['What limitations does the note identify?']
+        };
+      }
+    }
+  });
+  const researchApp = app.createApp({ researchAssistant: assistant, researchRepository: repository });
+
+  await withServer(async (baseUrl) => {
+    const page = await fetch(baseUrl + '/research/a-useful-research-note');
+    const pageHtml = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(pageHtml, /data-assistant-available="true"/);
+    assert.doesNotMatch(pageHtml, /Source-grounded answers are being connected/);
+
+    const response = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: 'What does this note conclude?',
+        scope: 'article',
+        slug: 'a-useful-research-note'
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(capturedRetrieval, {
+      question: 'What does this note conclude?',
+      scope: 'article',
+      slug: 'a-useful-research-note',
+      limit: 8
+    });
+    assert.equal(capturedGeneration.evidence.length, 1);
+    assert.equal(capturedGeneration.evidence[0].title, 'A Useful Research Note');
+    assert.equal(capturedGeneration.evidence[0].heading, 'Overview');
+    assert.equal(payload.sources[0].number, 1);
+    assert.equal(payload.sources[0].url, '/research/a-useful-research-note#overview');
+    assert.match(payload.answer, /\[1\]/);
+    assert.match(payload.notice, /not medical advice/i);
+  }, researchApp);
+});
+
+test('research assistant API rejects invalid input and stays public-safe when unavailable', async () => {
+  const repository = createResearchRepository({
+    containerClient: createMockContainer({
+      'a-useful-research-note.md': researchSource()
+    })
+  });
+  const researchApp = app.createApp({ researchRepository: repository });
+
+  await withServer(async (baseUrl) => {
+    const invalid = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'x', scope: 'library' })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).error.code, 'invalid_question');
+
+    const missingArticle = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'What does this say?', scope: 'article', slug: 'missing-note' })
+    });
+    assert.equal(missingArticle.status, 404);
+    assert.equal((await missingArticle.json()).error.code, 'article_not_found');
+
+    const unavailable = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'What themes appear?', scope: 'library' })
+    });
+    const unavailablePayload = await unavailable.json();
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailablePayload.error.code, 'assistant_unavailable');
+    assert.doesNotMatch(JSON.stringify(unavailablePayload), /stack|ResearchAssistantUnavailableError/);
+  }, researchApp);
+});
+
+test('Azure proxy-aware assistant limits clients independently', async () => {
+  const repository = createResearchRepository({
+    containerClient: createMockContainer({
+      'a-useful-research-note.md': researchSource()
+    })
+  });
+  const assistant = createResearchAssistant({
+    provider: {
+      async retrieve() { return []; },
+      async generate() { throw new Error('Generation should not run without evidence.'); }
+    }
+  });
+  const previousSiteName = process.env.WEBSITE_SITE_NAME;
+  process.env.WEBSITE_SITE_NAME = 'cvkewebsite';
+  const researchApp = app.createApp({ researchAssistant: assistant, researchRepository: repository });
+  if (previousSiteName === undefined) {
+    delete process.env.WEBSITE_SITE_NAME;
+  } else {
+    process.env.WEBSITE_SITE_NAME = previousSiteName;
+  }
+
+  async function ask(baseUrl, forwardedFor) {
+    return fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': forwardedFor
+      },
+      body: JSON.stringify({ question: 'What themes appear?', scope: 'library' })
+    });
+  }
+
+  await withServer(async (baseUrl) => {
+    for (let index = 0; index < 5; index += 1) {
+      const response = await ask(baseUrl, '203.0.113.10');
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).status, 'no_evidence');
+    }
+
+    const limited = await ask(baseUrl, '203.0.113.10');
+    assert.equal(limited.status, 429);
+    assert.equal(limited.headers.get('retry-after'), '60');
+
+    const independent = await ask(baseUrl, '198.51.100.20');
+    assert.equal(independent.status, 200);
+  }, researchApp);
+});
+
+test('research assistant response contract rejects invented or missing citations', () => {
+  assert.throws(
+    () => normalizeResponse({
+      answer: 'An unsupported answer.',
+      sources: [{ title: 'Note', url: '/research/note#overview' }]
+    }),
+    ResearchAssistantInvalidResponseError
+  );
+  assert.throws(
+    () => normalizeResponse({
+      answer: 'An answer with an invented source. [2]',
+      sources: [{ title: 'Note', url: '/research/note#overview' }]
+    }),
+    ResearchAssistantInvalidResponseError
+  );
+  assert.throws(
+    () => normalizeResponse({
+      answer: 'An answer with an external source. [1]',
+      sources: [{ title: 'Note', url: 'https://example.com/invented' }]
+    }),
+    ResearchAssistantInvalidResponseError
+  );
+});
+
+test('research indexer preserves viewer heading IDs and excludes the bibliography', () => {
+  const sections = markdownSections([
+    '# Main finding',
+    '',
+    'Opening evidence.1',
+    '',
+    '## Repeated section',
+    '',
+    'First repeated evidence.2',
+    '',
+    '## Repeated section',
+    '',
+    'Second repeated evidence.3',
+    '',
+    '#### Works cited',
+    '',
+    '1. A source that should not become answer evidence.'
+  ].join('\n'));
+
+  assert.deepEqual(sections.map((section) => section.headingId), [
+    'main-finding',
+    'repeated-section',
+    'repeated-section-2'
+  ]);
+  assert.doesNotMatch(sections.map((section) => section.text).join(' '), /should not become/);
+
+  const documents = buildDocuments({
+    blobName: 'a-useful-research-note.md',
+    slug: 'a-useful-research-note',
+    etag: 'stable-etag',
+    lastModified: new Date('2026-07-01T12:00:00.000Z')
+  }, researchSource({}, '# Overview\n\nA grounded passage.1\n\n#### Works cited\n\n1. Source'));
+
+  assert.equal(documents.length, 1);
+  assert.equal(documents[0].articleUrl, '/research/a-useful-research-note#overview');
+  assert.equal(documents[0].headingPath, 'Overview');
+  assert.equal(documents[0].sourceEtag, 'stable-etag');
+  assert.doesNotMatch(documents[0].content, /Works cited|Source/);
+});
+
+test('research index definition reserves a vector field without requiring vectors during initial load', () => {
+  const definition = indexDefinition('research-chunks-v1');
+  const vectorField = definition.fields.find((field) => field.name === 'contentVector');
+
+  assert.equal(definition.name, 'research-chunks-v1');
+  assert.equal(vectorField.dimensions, 1536);
+  assert.equal(vectorField.vectorSearchProfile, 'research-vector-profile');
+  assert.equal(definition.vectorSearch.algorithms[0].kind, 'hnsw');
 });

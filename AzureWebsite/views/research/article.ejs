@@ -65,6 +65,8 @@
           </aside>
         </header>
 
+        <%- include('_assistant', { assistant }) %>
+
         <%
           const tocGroups = [];
           article.toc.forEach(function(item) {

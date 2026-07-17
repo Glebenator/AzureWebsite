@@ -7,15 +7,20 @@ var logger = require('morgan');
 var indexRouter = require('./routes/index');
 var createResearchRouter = require('./routes/research');
 var createResearchRepository = require('./services/research-repository').createResearchRepository;
+var createResearchAssistant = require('./services/research-assistant').createResearchAssistant;
 
 function createApp(options) {
   var app = express();
   var researchRepository = options && options.researchRepository
     ? options.researchRepository
     : createResearchRepository();
+  var researchAssistant = options && options.researchAssistant
+    ? options.researchAssistant
+    : createResearchAssistant();
 
   app.disable('x-powered-by');
   app.set('env', process.env.NODE_ENV === 'development' ? 'development' : 'production');
+  if (process.env.WEBSITE_SITE_NAME) app.set('trust proxy', 1);
 
   // view engine setup
   app.set('views', path.join(__dirname, 'views'));
@@ -43,7 +48,7 @@ function createApp(options) {
   app.use('/icons', express.static(path.join(__dirname, 'node_modules/@phosphor-icons/web/src')));
 
   app.use('/', indexRouter);
-  app.use('/research', createResearchRouter(researchRepository));
+  app.use('/research', createResearchRouter(researchRepository, researchAssistant));
 
   // catch 404 and forward to error handler
   app.use(function(req, res, next) {

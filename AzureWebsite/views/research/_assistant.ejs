@@ -1,0 +1,85 @@
+<section
+  class="research-assistant"
+  aria-labelledby="research-assistant-title-<%= assistant.scope %>"
+  data-research-assistant
+  data-assistant-available="<%= assistant.available ? 'true' : 'false' %>"
+  data-assistant-scope="<%= assistant.scope %>"
+  data-assistant-slug="<%= assistant.slug %>"
+>
+  <div class="assistant-intro">
+    <p class="research-kicker"><%= assistant.label %></p>
+    <h2 id="research-assistant-title-<%= assistant.scope %>"><%= assistant.heading %></h2>
+    <p><%= assistant.description %></p>
+    <p class="assistant-scope">
+      <i class="ph ph-crosshair" aria-hidden="true"></i>
+      <span>Scope: <strong><%= assistant.scopeLabel %></strong></span>
+    </p>
+  </div>
+
+  <div class="assistant-workspace">
+    <form data-assistant-form>
+      <label for="assistant-question-<%= assistant.scope %>">Your question</label>
+      <div class="assistant-composer">
+        <textarea
+          id="assistant-question-<%= assistant.scope %>"
+          name="question"
+          rows="3"
+          minlength="3"
+          maxlength="600"
+          placeholder="Ask for a comparison, summary, or evidence trail"
+          <%= assistant.available ? '' : 'disabled' %>
+          required
+          data-assistant-question
+        ></textarea>
+        <button type="submit" <%= assistant.available ? '' : 'disabled' %> data-assistant-submit>
+          <span>Ask</span>
+          <i class="ph ph-arrow-right" aria-hidden="true"></i>
+        </button>
+      </div>
+      <p class="assistant-privacy">Do not include personal medical details. Answers are research summaries, not advice.</p>
+    </form>
+
+    <% if (assistant.available) { %>
+      <div class="assistant-suggestions" aria-label="Example questions">
+        <p>Try asking</p>
+        <div>
+          <% assistant.suggestions.forEach(function(suggestion) { %>
+            <button type="button" data-assistant-suggestion="<%= suggestion %>"><%= suggestion %></button>
+          <% }); %>
+        </div>
+      </div>
+    <% } else { %>
+      <div class="assistant-unavailable" role="status">
+        <i class="ph ph-plugs" aria-hidden="true"></i>
+        <div>
+          <p>Source-grounded answers are being connected.</p>
+          <p>The archive remains fully available to search and read.</p>
+        </div>
+      </div>
+    <% } %>
+
+    <p class="assistant-status" role="status" aria-live="polite" hidden data-assistant-status></p>
+
+    <div class="assistant-loading" aria-hidden="true" hidden data-assistant-loading>
+      <span></span><span></span><span></span>
+    </div>
+
+    <div class="assistant-result" hidden data-assistant-result>
+      <p class="assistant-result-label" data-assistant-result-label>Grounded answer</p>
+      <div class="assistant-answer" data-assistant-answer></div>
+      <p class="assistant-grounding" data-assistant-grounding></p>
+
+      <details class="assistant-evidence" open data-assistant-evidence>
+        <summary>Sources used</summary>
+        <ol data-assistant-sources></ol>
+      </details>
+
+      <div class="assistant-follow-ups" hidden data-assistant-follow-ups>
+        <p>Ask next</p>
+        <div data-assistant-follow-up-list></div>
+      </div>
+
+      <p class="assistant-notice" data-assistant-notice></p>
+    </div>
+  </div>
+</section>

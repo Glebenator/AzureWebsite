@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node ./bin/www",
     "test": "node --test",
+    "research:index": "node ./scripts/index-research.js",
     "privacy:scan": "node ./scripts/privacy-scan.js",
     "check": "npm test && npm run privacy:scan"
   },

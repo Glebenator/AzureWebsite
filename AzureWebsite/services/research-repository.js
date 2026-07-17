@@ -653,6 +653,38 @@ function createResearchRepository(options = {}) {
       }
     },
 
+    async resolveEvidenceSource({ articleSlug, headingId, sourceEtag } = {}) {
+      if (
+        !SLUG_PATTERN.test(articleSlug || '')
+        || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(headingId || '')
+        || typeof sourceEtag !== 'string'
+        || !sourceEtag
+      ) {
+        return null;
+      }
+
+      const currentCatalog = await getCatalog();
+      const entry = currentCatalog.bySlug.get(articleSlug);
+      if (!entry || !entry.etag || entry.etag !== sourceEtag) return null;
+
+      try {
+        const article = await downloadAndParse(entry);
+        const heading = article.toc.find((item) => item.id === headingId);
+        if (!heading) return null;
+        return {
+          articleSlug,
+          headingId,
+          heading: heading.label,
+          sourceEtag: entry.etag,
+          title: article.title,
+          url: `/research/${articleSlug}#${headingId}`
+        };
+      } catch (error) {
+        if (error instanceof ResearchStorageError) throw error;
+        throw new ResearchStorageError('The research article could not be loaded.', { cause: error });
+      }
+    },
+
     clearCache() {
       catalog = null;
       articleCache.clear();
@@ -664,5 +696,7 @@ module.exports = {
   ResearchStorageError,
   createResearchRepository,
   createMarkdownRenderer,
+  headingSlug,
+  plainMarkdownText,
   slugFromBlobName
 };
