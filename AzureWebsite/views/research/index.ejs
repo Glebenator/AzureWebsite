@@ -11,6 +11,7 @@
     <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
     <link rel="stylesheet" href="/icons/regular/style.css">
     <link rel="stylesheet" href="/stylesheets/style.css">
+    <script src="/javascripts/research.js" defer></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
@@ -35,16 +36,59 @@
       </header>
 
       <section class="research-library" aria-labelledby="library-title">
+        <form class="research-controls" action="/research" method="get" role="search">
+          <div class="research-field research-search-field">
+            <label for="research-search">Search</label>
+            <input
+              id="research-search"
+              name="q"
+              type="search"
+              maxlength="80"
+              value="<%= filters.q %>"
+              placeholder="Titles and summaries"
+            >
+          </div>
+          <div class="research-field">
+            <label for="research-topic">Topic</label>
+            <select id="research-topic" name="topic">
+              <option value="">All topics</option>
+              <% topics.forEach(function(topic) { %>
+                <option value="<%= topic.key %>" <%= filters.topic === topic.key ? 'selected' : '' %>><%= topic.label %></option>
+              <% }); %>
+            </select>
+          </div>
+          <div class="research-field">
+            <label for="research-sort">Sort</label>
+            <select id="research-sort" name="sort">
+              <% sortOptions.forEach(function(option) { %>
+                <option value="<%= option.value %>" <%= filters.sort === option.value ? 'selected' : '' %>><%= option.label %></option>
+              <% }); %>
+            </select>
+          </div>
+          <button class="research-apply" type="submit">Apply</button>
+          <% if (hasFilters) { %><a class="research-clear" href="/research">Clear</a><% } %>
+        </form>
+
         <div class="research-library-heading">
           <h2 id="library-title">Library</h2>
-          <p><%= articles.length %> <%= articles.length === 1 ? 'entry' : 'entries' %></p>
+          <p>
+            <% if (hasFilters) { %><%= articles.length %> of <% } %><%= totalArticles %>
+            <%= totalArticles === 1 ? 'entry' : 'entries' %>
+          </p>
         </div>
 
-        <% if (articles.length === 0) { %>
+        <% if (totalArticles === 0) { %>
           <div class="research-state" role="status">
             <i class="ph ph-books" aria-hidden="true"></i>
             <h3>The shelf is being prepared.</h3>
             <p>No research notes are available yet. Please check back soon.</p>
+          </div>
+        <% } else if (articles.length === 0) { %>
+          <div class="research-state" role="status">
+            <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+            <h3>No matching research.</h3>
+            <p>Try a broader search or clear the current filters.</p>
+            <a class="text-link" href="/research">Clear filters</a>
           </div>
         <% } else { %>
           <ol class="research-list">
@@ -57,6 +101,7 @@
                     <% if (article.excerpt) { %><p><%= article.excerpt %></p><% } %>
                   </div>
                   <div class="research-row-meta">
+                    <span class="research-topic"><%= article.topic.label %></span>
                     <% if (article.displayDate) { %><time datetime="<%= article.modifiedAt || article.createdAt %>"><%= article.displayDate %></time><% } %>
                     <span><%= article.readingMinutes %> min read</span>
                     <a href="/research/<%= article.slug %>" aria-label="Read <%= article.title %>">

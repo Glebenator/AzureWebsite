@@ -11,9 +11,20 @@
     <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
     <link rel="stylesheet" href="/icons/regular/style.css">
     <link rel="stylesheet" href="/stylesheets/style.css">
+    <script src="/javascripts/research.js" defer></script>
   </head>
-  <body>
+  <body class="research-article-page">
     <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <div
+      class="reading-progress"
+      role="progressbar"
+      aria-label="Article reading progress"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow="0"
+      data-reading-progress
+    ><span data-reading-progress-bar></span></div>
 
     <header class="site-header" aria-label="Primary">
       <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
@@ -38,7 +49,9 @@
             <% } else if (article.displayCreatedAt) { %>
               <p>Created <time datetime="<%= article.createdAt %>"><%= article.displayCreatedAt %></time></p>
             <% } %>
+            <p><%= article.topic.label %></p>
             <p><%= article.readingMinutes %> min read</p>
+            <% if (article.citationCount > 0) { %><p><%= article.citationCount %> citations</p><% } %>
             <% if (article.sourceUrl) { %>
               <a href="<%= article.sourceUrl %>" target="_blank" rel="noopener noreferrer">
                 <span>Original source</span>
@@ -52,13 +65,98 @@
           </aside>
         </header>
 
-        <div class="article-layout">
-          <div class="article-rail" aria-hidden="true">
-            <span>Research</span>
-          </div>
-          <div class="research-prose"><%- article.html %></div>
+        <%
+          const tocGroups = [];
+          article.toc.forEach(function(item) {
+            if (item.level === 2 || tocGroups.length === 0) {
+              tocGroups.push({ heading: item, children: [] });
+            } else {
+              tocGroups[tocGroups.length - 1].children.push(item);
+            }
+          });
+        %>
+
+        <% if (tocGroups.length > 0) { %>
+          <details class="article-toc-mobile">
+            <summary>
+              <span>On this page</span>
+              <span data-reading-status>0% read · <%= article.readingMinutes %> min left</span>
+            </summary>
+            <nav aria-label="On this page">
+              <ol class="toc-groups">
+                <% tocGroups.forEach(function(group) { %>
+                  <li class="toc-section">
+                    <% if (group.children.length > 0) { %>
+                      <details class="toc-group" data-toc-group="<%= group.heading.id %>" open>
+                        <summary>
+                          <a href="#<%= group.heading.id %>" data-toc-link="<%= group.heading.id %>"><%= group.heading.label %></a>
+                          <span class="toc-toggle" aria-hidden="true"><span class="toc-toggle-expand">+</span><span class="toc-toggle-collapse">−</span></span>
+                        </summary>
+                        <ol>
+                          <% group.children.forEach(function(item) { %>
+                            <li><a href="#<%= item.id %>" data-toc-link="<%= item.id %>"><%= item.label %></a></li>
+                          <% }); %>
+                        </ol>
+                      </details>
+                    <% } else { %>
+                      <a class="toc-standalone" href="#<%= group.heading.id %>" data-toc-link="<%= group.heading.id %>"><%= group.heading.label %></a>
+                    <% } %>
+                  </li>
+                <% }); %>
+              </ol>
+            </nav>
+          </details>
+        <% } %>
+
+        <div class="article-layout <%= tocGroups.length === 0 ? 'without-toc' : '' %>">
+          <% if (tocGroups.length > 0) { %>
+            <aside class="article-toc" aria-label="On this page">
+              <div>
+                <p class="article-toc-title">On this page</p>
+                <p class="article-toc-progress" data-reading-status>0% read · <%= article.readingMinutes %> min left</p>
+                <nav>
+                  <ol class="toc-groups">
+                    <% tocGroups.forEach(function(group) { %>
+                      <li class="toc-section">
+                        <% if (group.children.length > 0) { %>
+                          <details class="toc-group" data-toc-group="<%= group.heading.id %>" open>
+                            <summary>
+                              <a href="#<%= group.heading.id %>" data-toc-link="<%= group.heading.id %>"><%= group.heading.label %></a>
+                              <span class="toc-toggle" aria-hidden="true"><span class="toc-toggle-expand">+</span><span class="toc-toggle-collapse">−</span></span>
+                            </summary>
+                            <ol>
+                              <% group.children.forEach(function(item) { %>
+                                <li><a href="#<%= item.id %>" data-toc-link="<%= item.id %>"><%= item.label %></a></li>
+                              <% }); %>
+                            </ol>
+                          </details>
+                        <% } else { %>
+                          <a class="toc-standalone" href="#<%= group.heading.id %>" data-toc-link="<%= group.heading.id %>"><%= group.heading.label %></a>
+                        <% } %>
+                      </li>
+                    <% }); %>
+                  </ol>
+                </nav>
+              </div>
+            </aside>
+          <% } %>
+          <div
+            class="research-prose"
+            id="article-content"
+            data-reading-minutes="<%= article.readingMinutes %>"
+          ><%- article.html %></div>
         </div>
       </article>
+
+      <div class="citation-tooltip" id="research-citation-tooltip" role="tooltip" hidden>
+        <p data-citation-tooltip-title></p>
+        <p data-citation-tooltip-domain></p>
+      </div>
+
+      <a class="back-to-top" href="#main-content" data-back-to-top hidden>
+        <i class="ph ph-arrow-up" aria-hidden="true"></i>
+        <span>Back to top</span>
+      </a>
 
       <footer class="article-footer">
         <a class="text-link" href="/research"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to the library</span></a>

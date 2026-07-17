@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
 const app = require('../app');
 const portfolio = require('../data/portfolio');
+const { filterAndSortArticles } = require('../routes/research');
 const {
   ResearchStorageError,
+  createMarkdownRenderer,
   createResearchRepository
 } = require('../services/research-repository');
 
@@ -46,7 +48,7 @@ function createMockContainer(blobs) {
   };
 }
 
-function researchSource(overrides = {}) {
+function researchSource(overrides = {}, body = '# Overview\n\nA **focused** research summary with useful context.') {
   const metadata = {
     title: 'A Useful Research Note',
     source_url: 'https://example.com/source',
@@ -58,7 +60,7 @@ function researchSource(overrides = {}) {
   const frontMatter = Object.entries(metadata)
     .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
     .join('\n');
-  return `---\n${frontMatter}\n---\n\n# Overview\n\nA **focused** research summary with useful context.`;
+  return `---\n${frontMatter}\n---\n\n${body}`;
 }
 
 test('homepage renders verified portfolio content and security headers', async () => {
@@ -68,6 +70,7 @@ test('homepage renders verified portfolio content and security headers', async (
 
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+    assert.match(response.headers.get('content-security-policy'), /form-action 'self'/);
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.doesNotMatch(response.headers.get('content-type'), /application\/json/);
     assert.match(html, /Gleb Gladyshevskiy/);
@@ -130,7 +133,7 @@ test('research index lists enumerated Markdown blobs with metadata', async () =>
 
     assert.equal(response.status, 200);
     assert.match(html, /A Useful Research Note/);
-    assert.match(html, /1 entry/);
+    assert.match(html, /1\s+entry/);
     assert.match(html, /research, not medical advice/i);
     assert.match(html, /href="\/research\/a-useful-research-note"/);
     assert.doesNotMatch(html, /private-drive-id/);
@@ -183,7 +186,10 @@ test('research catalog cache avoids per-view listings and reuses ETag-matched ar
 test('research article renders Markdown and preserves safe source attribution', async () => {
   const repository = createResearchRepository({
     containerClient: createMockContainer({
-      'a-useful-research-note.md': researchSource()
+      'a-useful-research-note.md': researchSource(
+        {},
+        '# Overview\n\n### Supporting detail\n\nA **focused** research summary with useful context.'
+      )
     })
   });
   const researchApp = app.createApp({ researchRepository: repository });
@@ -193,7 +199,11 @@ test('research article renders Markdown and preserves safe source attribution', 
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.match(html, /<h2>Overview<\/h2>/);
+    assert.match(html, /<h2 id="overview" class="research-section-heading">Overview/);
+    assert.match(html, /href="#overview" class="heading-permalink"/);
+    assert.match(html, /On this page/);
+    assert.match(html, /class="toc-group" data-toc-group="overview" open/);
+    assert.match(html, /class="back-to-top" href="#main-content" data-back-to-top hidden/);
     assert.match(html, /A <strong>focused<\/strong> research summary/);
     assert.match(html, /href="https:\/\/example\.com\/source"/);
     assert.match(html, /Original source/);
@@ -229,9 +239,168 @@ test('research rendering neutralizes raw HTML and unsafe link schemes', async ()
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.doesNotMatch(html, /<script[\s>]/i);
+    assert.equal((html.match(/<script\b/gi) || []).length, 1);
+    assert.match(html, /<script src="\/javascripts\/research\.js" defer><\/script>/);
     assert.doesNotMatch(html, /href="javascript:/i);
     assert.doesNotMatch(html, /onerror=/i);
+  }, researchApp);
+});
+
+test('research citation callouts link to matching numbered references', () => {
+  const renderMarkdown = createMarkdownRenderer();
+  const rendered = renderMarkdown([
+    'Evidence supports the first claim.1 A dose of 0.2 remains a decimal, and step 2 is ordinary text. [2, 3]',
+    '',
+    '#### **Works cited**',
+    '',
+    '1. First source, [https://example.com/one](https://example.com/one)  ',
+    '2. Second source, [https://example.com/two](https://example.com/two)  ',
+    '3. Third source, [https://example.com/three](https://example.com/three)'
+  ].join('\n'));
+  const html = rendered.html;
+
+  assert.equal(rendered.citationCount, 3);
+  assert.match(html, /href="#reference-1"[^>]*class="research-citation"/);
+  assert.match(html, /href="#reference-2"[^>]*class="research-citation"/);
+  assert.match(html, /href="#reference-3"[^>]*class="research-citation"/);
+  assert.match(html, /data-reference-title="First source"/);
+  assert.match(html, /data-reference-domain="example.com"/);
+  assert.match(html, /<li id="reference-1" class="research-reference">/);
+  assert.match(html, /href="#citation-1-1" class="reference-backlink"/);
+  assert.match(html, /<h4 id="references" class="research-references-heading">/);
+  assert.match(html, /A dose of 0\.2 remains a decimal, and step 2 is ordinary text/);
+  assert.match(html, /href="https:\/\/example\.com\/one" rel="noopener noreferrer" target="_blank"/);
+
+  const escapedListHtml = renderMarkdown([
+    'Another supported claim.1',
+    '',
+    '#### **Works cited**',
+    '',
+    '1\\. First exported source, https://example.com/one 2\\. Second exported source, https://example.com/two'
+  ].join('\n')).html;
+  assert.match(escapedListHtml, /href="#reference-1"/);
+  assert.match(escapedListHtml, /<li id="reference-1" class="research-reference">/);
+  assert.match(escapedListHtml, /<li id="reference-2" class="research-reference">/);
+});
+
+test('research renderer creates stable TOC entries and duplicate-safe heading permalinks', () => {
+  const rendered = createMarkdownRenderer()([
+    '# Main Finding',
+    '',
+    '## Repeated section',
+    '',
+    '### Detail',
+    '',
+    '## Repeated section',
+    '',
+    '#### **Works cited**',
+    '',
+    '1. Example source, https://example.com'
+  ].join('\n'));
+
+  assert.deepEqual(rendered.toc, [
+    { id: 'main-finding', label: 'Main Finding', level: 2 },
+    { id: 'repeated-section', label: 'Repeated section', level: 2 },
+    { id: 'detail', label: 'Detail', level: 3 },
+    { id: 'repeated-section-2', label: 'Repeated section', level: 2 },
+    { id: 'references', label: 'Works cited', level: 2 }
+  ]);
+  assert.match(rendered.html, /id="repeated-section-2"/);
+  assert.match(rendered.html, /href="#repeated-section-2" class="heading-permalink"/);
+});
+
+test('research filtering searches metadata and supports every sort order', () => {
+  const articles = [
+    {
+      title: 'Alpha Health', excerpt: 'Nutrition evidence', topic: { key: 'health' },
+      readingMinutes: 5, modifiedAt: '2026-01-01T00:00:00.000Z'
+    },
+    {
+      title: 'Beta Systems', excerpt: 'Autonomous engines', topic: { key: 'technology' },
+      readingMinutes: 2, modifiedAt: '2026-02-01T00:00:00.000Z'
+    },
+    {
+      title: 'Gamma Culture', excerpt: 'Music and identity', topic: { key: 'culture' },
+      readingMinutes: 8, modifiedAt: '2026-03-01T00:00:00.000Z'
+    }
+  ];
+
+  assert.deepEqual(
+    filterAndSortArticles([...articles], { q: 'engines', topic: 'technology', sort: 'newest' })
+      .map((article) => article.title),
+    ['Beta Systems']
+  );
+  assert.deepEqual(
+    filterAndSortArticles([...articles], { q: '', topic: '', sort: 'newest' })
+      .map((article) => article.title),
+    ['Gamma Culture', 'Beta Systems', 'Alpha Health']
+  );
+  assert.deepEqual(
+    filterAndSortArticles([...articles], { q: '', topic: '', sort: 'title' })
+      .map((article) => article.title),
+    ['Alpha Health', 'Beta Systems', 'Gamma Culture']
+  );
+  assert.deepEqual(
+    filterAndSortArticles([...articles], { q: '', topic: '', sort: 'shortest' })
+      .map((article) => article.title),
+    ['Beta Systems', 'Alpha Health', 'Gamma Culture']
+  );
+  assert.deepEqual(
+    filterAndSortArticles([...articles], { q: '', topic: '', sort: 'longest' })
+      .map((article) => article.title),
+    ['Gamma Culture', 'Alpha Health', 'Beta Systems']
+  );
+});
+
+test('research query controls filter cached catalog data and handle invalid or empty results', async () => {
+  const blobs = {
+    'autonomous-taxi-ai-state-and-future.md': researchSource({
+      title: 'Autonomous Taxi Systems',
+      modified_at: '2026-03-01T00:00:00.000Z'
+    }),
+    'music-taste-factors-and-personality.md': researchSource({
+      title: 'Music and Personality',
+      modified_at: '2026-02-01T00:00:00.000Z'
+    }),
+    'vitamin-d-supplementation-research-overview.md': researchSource({
+      title: 'Vitamin D Evidence',
+      modified_at: '2026-01-01T00:00:00.000Z'
+    })
+  };
+  const baseContainer = createMockContainer(blobs);
+  let listCalls = 0;
+  const containerClient = {
+    async *listBlobsFlat() {
+      listCalls += 1;
+      for await (const blob of baseContainer.listBlobsFlat()) yield blob;
+    },
+    getBlobClient: baseContainer.getBlobClient
+  };
+  const repository = createResearchRepository({ containerClient });
+  const researchApp = app.createApp({ researchRepository: repository });
+
+  await withServer(async (baseUrl) => {
+    const combined = await fetch(baseUrl + '/research?q=Taxi&topic=technology&sort=title');
+    const combinedHtml = await combined.text();
+    assert.equal(combined.status, 200);
+    assert.match(combinedHtml, /Autonomous Taxi Systems/);
+    assert.doesNotMatch(combinedHtml, /Music and Personality/);
+    assert.match(combinedHtml, /1\s+of\s+3/);
+    assert.match(combinedHtml, /value="Taxi"/);
+    assert.match(combinedHtml, /value="technology" selected/);
+
+    const noResults = await fetch(baseUrl + '/research?q=unfindable');
+    const noResultsHtml = await noResults.text();
+    assert.equal(noResults.status, 200);
+    assert.match(noResultsHtml, /No matching research/);
+    assert.match(noResultsHtml, /Clear filters/);
+
+    const invalid = await fetch(baseUrl + '/research?topic=unknown&sort=unknown');
+    const invalidHtml = await invalid.text();
+    assert.equal(invalid.status, 200);
+    assert.match(invalidHtml, /3\s+entries/);
+    assert.doesNotMatch(invalidHtml, /value="unknown" selected/);
+    assert.equal(listCalls, 1);
   }, researchApp);
 });
 
