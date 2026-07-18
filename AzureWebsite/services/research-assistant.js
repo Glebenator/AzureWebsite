@@ -6,8 +6,22 @@ const MAX_ANSWER_LENGTH = 6000;
 const MAX_EVIDENCE = 8;
 const MAX_FOLLOW_UPS = 3;
 const NO_EVIDENCE_ANSWER = 'I could not find enough relevant evidence in the published research notes to answer that question.';
+const GUARDRAIL_REFUSAL_ANSWER = 'The draft crossed the standard health-language guardrails, so it was not shown.';
+const DEFAULT_GUARDRAIL_MODE = 'standard';
+const GUARDRAIL_MODES = new Set([DEFAULT_GUARDRAIL_MODE, 'experimental']);
+const SAFE_FOLLOW_UPS = Object.freeze({
+  article: Object.freeze([
+    'What limitations does this note identify?',
+    'Which cited passages provide the strongest support?'
+  ]),
+  library: Object.freeze([
+    'What limitations or uncertainties do the cited notes describe?',
+    'Where do the cited notes agree or disagree?'
+  ])
+});
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const HEADING_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const TOPIC_KEYS = new Set(['health', 'technology', 'engineering', 'security', 'culture', 'other']);
 
 class ResearchAssistantUnavailableError extends Error {
   constructor(message = 'The research assistant is not configured.') {
@@ -34,6 +48,13 @@ function normalizeQuestion(value) {
   return question;
 }
 
+function normalizeGuardrailMode(value) {
+  const normalized = value === undefined || value === null || value === ''
+    ? DEFAULT_GUARDRAIL_MODE
+    : String(value).trim().toLowerCase();
+  return GUARDRAIL_MODES.has(normalized) ? normalized : null;
+}
+
 function safeResearchUrl(value) {
   if (typeof value !== 'string' || !value.startsWith('/research/')) return null;
   try {
@@ -48,18 +69,42 @@ function safeResearchUrl(value) {
   }
 }
 
-function noEvidenceResponse() {
+function noEvidenceResponse(guardrailMode = DEFAULT_GUARDRAIL_MODE) {
   return {
     answer: NO_EVIDENCE_ANSWER,
     followUps: [],
+    guardrailMode,
     sources: [],
     status: 'no_evidence'
   };
 }
 
-function normalizeGeneratedResponse(value, evidence = []) {
+function guardrailRefusalResponse(guardrailMode = DEFAULT_GUARDRAIL_MODE) {
+  return {
+    answer: GUARDRAIL_REFUSAL_ANSWER,
+    followUps: [],
+    guardrailMode,
+    sources: [],
+    status: 'guardrail_refusal'
+  };
+}
+
+function normalizeGeneratedResponse(
+  value,
+  evidence = [],
+  scope = 'library',
+  guardrailMode = DEFAULT_GUARDRAIL_MODE
+) {
   if (!value || typeof value !== 'object') throw new ResearchAssistantInvalidResponseError();
-  if (value.status === 'no_evidence') return noEvidenceResponse();
+  if (value.status === 'no_evidence') return noEvidenceResponse(guardrailMode);
+  if (value.status === 'guardrail_refusal') {
+    if (guardrailMode === 'experimental') {
+      throw new ResearchAssistantInvalidResponseError(
+        'The assistant returned a guardrail refusal in Experimental mode.'
+      );
+    }
+    return guardrailRefusalResponse(guardrailMode);
+  }
   if (value.status !== 'answered') {
     throw new ResearchAssistantInvalidResponseError('The assistant response has an invalid status.');
   }
@@ -90,14 +135,36 @@ function normalizeGeneratedResponse(value, evidence = []) {
       url: item.url
     };
   });
-  const followUps = Array.isArray(value.followUps)
-    ? value.followUps
-      .map((item) => safeText(item, 220))
-      .filter(Boolean)
-      .slice(0, MAX_FOLLOW_UPS)
-    : [];
+  const followUps = (SAFE_FOLLOW_UPS[scope] || SAFE_FOLLOW_UPS.library).slice(0, MAX_FOLLOW_UPS);
 
-  return { answer, followUps, sources, status: 'answered' };
+  return { answer, followUps, guardrailMode, sources, status: 'answered' };
+}
+
+function observe(request, detail) {
+  if (typeof request.observe !== 'function') return;
+  try {
+    request.observe(detail);
+  } catch {
+    // Observability must never affect the answer path.
+  }
+}
+
+function withRequestContext(value, { signal, guardrailMode }) {
+  if (signal && typeof signal.addEventListener === 'function') {
+    Object.defineProperty(value, 'signal', {
+      configurable: false,
+      enumerable: false,
+      value: signal,
+      writable: false
+    });
+  }
+  Object.defineProperty(value, 'guardrailMode', {
+    configurable: false,
+    enumerable: false,
+    value: guardrailMode,
+    writable: false
+  });
+  return value;
 }
 
 async function canonicalizeEvidence(candidates, request) {
@@ -132,7 +199,13 @@ async function canonicalizeEvidence(candidates, request) {
     const title = safeText(canonical && canonical.title, 240);
     const heading = safeText(canonical && canonical.heading, 240);
     const url = safeResearchUrl(canonical && canonical.url);
-    if (!title || !heading || url !== `/research/${articleSlug}#${headingId}`) continue;
+    const canonicalTopicKey = safeText(canonical && canonical.topicKey, 40).toLowerCase();
+    if (
+      !title
+      || !heading
+      || url !== `/research/${articleSlug}#${headingId}`
+      || (canonicalTopicKey && !TOPIC_KEYS.has(canonicalTopicKey))
+    ) continue;
 
     seenIds.add(id);
     evidence.push({
@@ -145,6 +218,7 @@ async function canonicalizeEvidence(candidates, request) {
       excerpt: safeText(candidate.excerpt, 420) || content.slice(0, 420),
       content,
       sourceEtag,
+      topicKey: canonicalTopicKey || null,
       url
     });
   }
@@ -171,35 +245,60 @@ function createResearchAssistant(options = {}) {
       const question = normalizeQuestion(request.question);
       const scope = request.scope;
       const slug = scope === 'article' ? safeText(request.slug, 180).toLowerCase() : '';
+      const guardrailMode = normalizeGuardrailMode(request.guardrailMode);
       if (
         !question
         || (scope !== 'article' && scope !== 'library')
         || (scope === 'article' && !SLUG_PATTERN.test(slug))
+        || !guardrailMode
         || typeof request.resolveEvidenceSource !== 'function'
       ) {
         throw new ResearchAssistantInvalidResponseError('The assistant request is invalid.');
       }
 
-      const candidates = await provider.retrieve({
+      const retrievalStartedAt = Date.now();
+      const candidates = await provider.retrieve(withRequestContext({
         question,
         scope,
         slug,
         limit: MAX_EVIDENCE
+      }, { signal: request.signal, guardrailMode }));
+      observe(request, {
+        count: Array.isArray(candidates) ? candidates.length : 0,
+        durationMs: Date.now() - retrievalStartedAt,
+        stage: 'retrieval'
       });
       const evidence = await canonicalizeEvidence(candidates, {
         resolveEvidenceSource: request.resolveEvidenceSource,
         scope,
         slug
       });
-      if (evidence.length === 0) return noEvidenceResponse();
+      observe(request, { count: evidence.length, stage: 'canonicalization' });
+      if (evidence.length === 0) {
+        observe(request, { sourceCount: 0, stage: 'result', status: 'no_evidence' });
+        return noEvidenceResponse(guardrailMode);
+      }
 
-      const generated = await provider.generate({ question, scope, evidence });
-      return normalizeGeneratedResponse(generated, evidence);
+      const generationStartedAt = Date.now();
+      const generated = await provider.generate(withRequestContext(
+        { question, scope, evidence },
+        { signal: request.signal, guardrailMode }
+      ));
+      observe(request, { durationMs: Date.now() - generationStartedAt, stage: 'generation' });
+      const response = normalizeGeneratedResponse(generated, evidence, scope, guardrailMode);
+      observe(request, {
+        sourceCount: response.sources.length,
+        stage: 'result',
+        status: response.status
+      });
+      return response;
     }
   };
 }
 
 module.exports = {
+  DEFAULT_GUARDRAIL_MODE,
+  GUARDRAIL_REFUSAL_ANSWER,
   MAX_QUESTION_LENGTH,
   NO_EVIDENCE_ANSWER,
   ResearchAssistantInvalidResponseError,

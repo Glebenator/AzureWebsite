@@ -1,6 +1,164 @@
 (function() {
   'use strict';
 
+  var ASSISTANT_REQUEST_TIMEOUT_MS = 45000;
+  var ASSISTANT_TIMEOUT_MESSAGE = 'The answer took too long. Please try again.';
+  var ASSISTANT_UPSTREAM_MESSAGE = 'Source-grounded answers are temporarily unavailable. Please try again.';
+  var ASSISTANT_NETWORK_MESSAGE = 'The research assistant could not be reached. Check your connection and try again.';
+
+  function AssistantRequestError(message, kind) {
+    this.name = 'AssistantRequestError';
+    this.message = message;
+    this.kind = kind || 'upstream';
+    if (Error.captureStackTrace) Error.captureStackTrace(this, AssistantRequestError);
+  }
+
+  AssistantRequestError.prototype = Object.create(Error.prototype);
+  AssistantRequestError.prototype.constructor = AssistantRequestError;
+
+  function safeServerMessage(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/\s+/g, ' ').trim().slice(0, 320);
+  }
+
+  function fallbackResponseMessage(status) {
+    if (status === 429) return 'Please wait before asking another question.';
+    if (status === 403) return 'This question could not be submitted from the current page.';
+    return ASSISTANT_UPSTREAM_MESSAGE;
+  }
+
+  function validAssistantPayload(payload) {
+    var hasValidShape = Boolean(
+      payload
+      && typeof payload === 'object'
+      && (
+        payload.status === 'answered'
+        || payload.status === 'no_evidence'
+        || payload.status === 'guardrail_refusal'
+      )
+      && (payload.guardrailMode === 'standard' || payload.guardrailMode === 'experimental')
+      && typeof payload.answer === 'string'
+      && Array.isArray(payload.sources)
+      && (payload.followUps === undefined || Array.isArray(payload.followUps))
+    );
+    if (!hasValidShape) return false;
+
+    if (payload.status === 'answered') {
+      if (payload.sources.length === 0 || !payload.sources.every(validCanonicalSource)) return false;
+
+      var sourceNumbers = payload.sources.map(function(source) { return source.number; });
+      var uniqueSourceNumbers = new Set(sourceNumbers);
+      if (uniqueSourceNumbers.size !== sourceNumbers.length) return false;
+
+      var numericBracketTokens = payload.answer.match(/\[[^\]\r\n]{0,80}\d[^\]\r\n]{0,80}\]/g) || [];
+      if (
+        numericBracketTokens.length === 0
+        || numericBracketTokens.some(function(token) { return !/^\[[1-9]\d*\]$/.test(token); })
+      ) return false;
+
+      var citedNumbers = new Set(numericBracketTokens.map(function(token) {
+        return Number.parseInt(token.slice(1, -1), 10);
+      }));
+      return Array.from(citedNumbers).every(function(number) { return uniqueSourceNumbers.has(number); })
+        && sourceNumbers.every(function(number) { return citedNumbers.has(number); });
+    }
+
+    if (payload.status === 'guardrail_refusal' && payload.guardrailMode === 'experimental') {
+      return false;
+    }
+
+    return payload.sources.length === 0
+      && Array.isArray(payload.followUps)
+      && payload.followUps.length === 0;
+  }
+
+  function resultPresentation(payload, sourceCount) {
+    var modeLabel = payload.guardrailMode === 'experimental'
+      ? 'Experimental mode'
+      : 'Standard mode';
+
+    if (payload.status === 'guardrail_refusal') {
+      return {
+        announcement: `Answer withheld in ${modeLabel.toLowerCase()}.`,
+        grounding: 'Relevant passages were found. Experimental mode can show a source-grounded version.',
+        label: 'Answer withheld',
+        modeLabel
+      };
+    }
+
+    if (payload.status === 'no_evidence') {
+      return {
+        announcement: `No grounded answer in ${modeLabel.toLowerCase()}.`,
+        grounding: 'Suitable passages were not found in the selected research scope.',
+        label: 'Evidence not found',
+        modeLabel
+      };
+    }
+
+    return {
+      announcement: `Grounded answer ready in ${modeLabel.toLowerCase()}.`,
+      grounding: `Grounded in ${sourceCount} ${sourceCount === 1 ? 'passage' : 'passages'}.`,
+      label: 'Grounded answer',
+      modeLabel
+    };
+  }
+
+  async function readAssistantResponse(response) {
+    var raw = await response.text();
+    var payload = null;
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = null;
+      }
+    }
+
+    if (!response.ok) {
+      var serverMessage = safeServerMessage(payload && payload.error && payload.error.message);
+      throw new AssistantRequestError(
+        serverMessage || fallbackResponseMessage(response.status),
+        response.status === 429 ? 'rate_limited' : 'upstream'
+      );
+    }
+    if (!validAssistantPayload(payload)) {
+      throw new AssistantRequestError(ASSISTANT_UPSTREAM_MESSAGE, 'upstream');
+    }
+    return payload;
+  }
+
+  function createRequestDeadline(timeoutMs, dependencies) {
+    var tools = dependencies || {};
+    var Controller = tools.AbortController
+      || (typeof AbortController === 'function' ? AbortController : null);
+    var schedule = tools.setTimeout || setTimeout;
+    var cancel = tools.clearTimeout || clearTimeout;
+    var duration = Math.min(60000, Math.max(5000, Number(timeoutMs) || ASSISTANT_REQUEST_TIMEOUT_MS));
+    var timedOut = false;
+    var controller = Controller ? new Controller() : null;
+    var timer = controller ? schedule(function() {
+      timedOut = true;
+      controller.abort();
+    }, duration) : null;
+
+    return {
+      signal: controller ? controller.signal : undefined,
+      clear: function() {
+        if (timer !== null) cancel(timer);
+      },
+      didTimeOut: function() { return timedOut; }
+    };
+  }
+
+  function assistantFailureMessage(error, deadline) {
+    if ((deadline && deadline.didTimeOut()) || (error && error.name === 'AbortError')) {
+      return ASSISTANT_TIMEOUT_MESSAGE;
+    }
+    if (error instanceof AssistantRequestError) return error.message;
+    if (error instanceof TypeError) return ASSISTANT_NETWORK_MESSAGE;
+    return ASSISTANT_UPSTREAM_MESSAGE;
+  }
+
   function appendAnswerWithCitations(container, answer, sources) {
     container.replaceChildren();
     var paragraph = document.createElement('p');
@@ -27,6 +185,16 @@
 
     paragraph.append(document.createTextNode(answer.slice(cursor)));
     container.append(paragraph);
+  }
+
+  function validCanonicalSource(source) {
+    return Boolean(
+      source
+      && Number.isInteger(source.number)
+      && typeof source.title === 'string'
+      && typeof source.url === 'string'
+      && /^\/research\/[a-z0-9]+(?:-[a-z0-9]+)*#[a-z0-9]+(?:-[a-z0-9]+)*$/.test(source.url)
+    );
   }
 
   function renderSources(list, sources) {
@@ -62,7 +230,9 @@
     var form = assistant.querySelector('[data-assistant-form]');
     var question = assistant.querySelector('[data-assistant-question]');
     var submit = assistant.querySelector('[data-assistant-submit]');
+    var submitLabel = assistant.querySelector('[data-assistant-submit-label]');
     var status = assistant.querySelector('[data-assistant-status]');
+    var retry = assistant.querySelector('[data-assistant-retry]');
     var loading = assistant.querySelector('[data-assistant-loading]');
     var result = assistant.querySelector('[data-assistant-result]');
     var answer = assistant.querySelector('[data-assistant-answer]');
@@ -73,13 +243,24 @@
     var followUps = assistant.querySelector('[data-assistant-follow-ups]');
     var followUpList = assistant.querySelector('[data-assistant-follow-up-list]');
     var notice = assistant.querySelector('[data-assistant-notice]');
+    var guardrails = assistant.querySelector('[data-assistant-guardrails]');
+    var resultMode = assistant.querySelector('[data-assistant-result-mode]');
+    var experimentalWarning = assistant.querySelector('[data-assistant-experimental-warning]');
 
     function setBusy(busy) {
+      assistant.setAttribute('aria-busy', busy ? 'true' : 'false');
+      form.setAttribute('aria-busy', busy ? 'true' : 'false');
       submit.disabled = busy;
-      question.disabled = busy;
+      question.readOnly = busy;
+      guardrails.disabled = busy;
+      submitLabel.textContent = busy ? 'Checking…' : 'Ask';
       loading.hidden = !busy;
+      assistant.querySelectorAll('[data-assistant-suggestion], [data-assistant-follow-up-list] button')
+        .forEach(function(button) { button.disabled = busy; });
       if (busy) {
+        status.classList.remove('visually-hidden');
         result.hidden = true;
+        retry.hidden = true;
         status.hidden = false;
         status.textContent = 'Searching the published notes and checking citations…';
       }
@@ -97,36 +278,52 @@
       });
     });
 
+    retry.addEventListener('click', function() {
+      form.requestSubmit();
+    });
+
     form.addEventListener('submit', async function(event) {
       event.preventDefault();
       if (!form.reportValidity()) return;
 
       setBusy(true);
+      var selectedMode = form.querySelector('[data-assistant-guardrail-mode]:checked');
+      var deadline = createRequestDeadline(ASSISTANT_REQUEST_TIMEOUT_MS);
+      var refocusQuestion = false;
       try {
         var response = await fetch('/research/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: deadline.signal,
           body: JSON.stringify({
             question: question.value,
             scope: assistant.dataset.assistantScope,
-            slug: assistant.dataset.assistantSlug || undefined
+            slug: assistant.dataset.assistantSlug || undefined,
+            guardrailMode: selectedMode ? selectedMode.value : 'standard'
           })
         });
-        var payload = await response.json();
-        if (!response.ok) throw new Error(payload.error && payload.error.message
-          ? payload.error.message
-          : 'The answer could not be loaded.');
+        var payload = await readAssistantResponse(response);
+        var sourceNumbers = new Set();
+        var canonicalSources = payload.sources.filter(function(source) {
+          if (!validCanonicalSource(source) || sourceNumbers.has(source.number)) return false;
+          sourceNumbers.add(source.number);
+          return true;
+        });
+        var presentation = resultPresentation(payload, canonicalSources.length);
 
-        appendAnswerWithCitations(answer, payload.answer, payload.sources);
-        renderSources(sources, payload.sources);
-        resultLabel.textContent = payload.status === 'no_evidence'
-          ? 'No grounded answer'
-          : 'Grounded answer';
-        grounding.textContent = payload.sources.length === 0
-          ? 'The library did not contain enough evidence for a grounded answer.'
-          : `Grounded in ${payload.sources.length} ${payload.sources.length === 1 ? 'passage' : 'passages'}.`;
-        evidence.hidden = payload.sources.length === 0;
+        appendAnswerWithCitations(answer, payload.answer, canonicalSources);
+        renderSources(sources, canonicalSources);
+        resultLabel.textContent = presentation.label;
+        resultMode.textContent = presentation.modeLabel;
+        resultMode.classList.toggle('is-experimental', payload.guardrailMode === 'experimental');
+        experimentalWarning.hidden = !(
+          payload.status === 'answered' && payload.guardrailMode === 'experimental'
+        );
+        grounding.textContent = presentation.grounding;
+        evidence.hidden = payload.status === 'no_evidence' || canonicalSources.length === 0;
         notice.textContent = payload.notice || '';
+        result.dataset.resultStatus = payload.status;
+        result.dataset.guardrailMode = payload.guardrailMode;
 
         followUpList.replaceChildren();
         (payload.followUps || []).forEach(function(item) {
@@ -138,18 +335,45 @@
         });
         followUps.hidden = followUpList.children.length === 0;
 
-        status.hidden = true;
+        status.textContent = presentation.announcement;
+        status.classList.add('visually-hidden');
+        status.hidden = false;
+        retry.hidden = true;
         result.hidden = false;
-        result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        result.focus({ preventScroll: true });
+        var reduceMotion = window.matchMedia
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        result.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest' });
       } catch (error) {
         result.hidden = true;
+        status.classList.remove('visually-hidden');
         status.hidden = false;
-        status.textContent = error.message || 'The answer could not be loaded.';
+        status.textContent = assistantFailureMessage(error, deadline);
+        retry.hidden = false;
+        refocusQuestion = true;
       } finally {
+        deadline.clear();
         setBusy(false);
+        if (refocusQuestion) question.focus({ preventScroll: true });
       }
     });
   }
+
+  if (typeof module === 'object' && module.exports) {
+    module.exports = {
+      ASSISTANT_REQUEST_TIMEOUT_MS,
+      AssistantRequestError,
+      assistantFailureMessage,
+      createRequestDeadline,
+      readAssistantResponse,
+      resultPresentation,
+      safeServerMessage,
+      validAssistantPayload,
+      validCanonicalSource
+    };
+  }
+
+  if (typeof document === 'undefined') return;
 
   initializeResearchAssistant();
 

@@ -1,6 +1,7 @@
 <section
   class="research-assistant"
   aria-labelledby="research-assistant-title-<%= assistant.scope %>"
+  aria-busy="false"
   data-research-assistant
   data-assistant-available="<%= assistant.available ? 'true' : 'false' %>"
   data-assistant-scope="<%= assistant.scope %>"
@@ -17,7 +18,7 @@
   </div>
 
   <div class="assistant-workspace">
-    <form data-assistant-form>
+    <form aria-busy="false" data-assistant-form>
       <label for="assistant-question-<%= assistant.scope %>">Your question</label>
       <div class="assistant-composer">
         <textarea
@@ -31,11 +32,55 @@
           required
           data-assistant-question
         ></textarea>
-        <button type="submit" <%= assistant.available ? '' : 'disabled' %> data-assistant-submit>
-          <span>Ask</span>
+        <button
+          type="submit"
+          aria-controls="assistant-result-<%= assistant.scope %> assistant-status-<%= assistant.scope %>"
+          <%= assistant.available ? '' : 'disabled' %>
+          data-assistant-submit
+        >
+          <span data-assistant-submit-label>Ask</span>
           <i class="ph ph-arrow-right" aria-hidden="true"></i>
         </button>
       </div>
+
+      <fieldset
+        class="assistant-guardrails"
+        aria-describedby="assistant-guardrails-note-<%= assistant.scope %>"
+        <%= assistant.available ? '' : 'disabled' %>
+        data-assistant-guardrails
+      >
+        <legend>Answer guardrails</legend>
+        <div class="assistant-mode-options">
+          <label>
+            <input
+              type="radio"
+              name="guardrailMode-<%= assistant.scope %>"
+              value="standard"
+              checked
+              data-assistant-guardrail-mode
+            >
+            <span>
+              <strong>Standard</strong>
+              <small>Health-writing guardrails active</small>
+            </span>
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="guardrailMode-<%= assistant.scope %>"
+              value="experimental"
+              data-assistant-guardrail-mode
+            >
+            <span>
+              <strong>Experimental</strong>
+              <small>Answer-writing guardrails relaxed</small>
+            </span>
+          </label>
+        </div>
+        <p id="assistant-guardrails-note-<%= assistant.scope %>">
+          Experimental changes answer wording only. Evidence checks and citations stay required.
+        </p>
+      </fieldset>
       <p class="assistant-privacy">Do not include personal medical details. Answers are research summaries, not advice.</p>
     </form>
 
@@ -58,14 +103,35 @@
       </div>
     <% } %>
 
-    <p class="assistant-status" role="status" aria-live="polite" hidden data-assistant-status></p>
+    <p
+      id="assistant-status-<%= assistant.scope %>"
+      class="assistant-status"
+      role="status"
+      aria-live="polite"
+      hidden
+      data-assistant-status
+    ></p>
+    <button class="assistant-retry" type="button" hidden data-assistant-retry>Try again</button>
 
     <div class="assistant-loading" aria-hidden="true" hidden data-assistant-loading>
       <span></span><span></span><span></span>
     </div>
 
-    <div class="assistant-result" hidden data-assistant-result>
-      <p class="assistant-result-label" data-assistant-result-label>Grounded answer</p>
+    <div
+      id="assistant-result-<%= assistant.scope %>"
+      class="assistant-result"
+      tabindex="-1"
+      hidden
+      data-assistant-result
+    >
+      <div class="assistant-result-heading">
+        <p class="assistant-result-label" data-assistant-result-label>Grounded answer</p>
+        <p class="assistant-result-mode" data-assistant-result-mode>Standard mode</p>
+      </div>
+      <div class="assistant-experimental-warning" role="note" hidden data-assistant-experimental-warning>
+        <i class="ph ph-warning" aria-hidden="true"></i>
+        <p><strong>Experimental answer.</strong> Health-writing guardrails were relaxed. Sources and citations were still enforced. This is not medical advice.</p>
+      </div>
       <div class="assistant-answer" data-assistant-answer></div>
       <p class="assistant-grounding" data-assistant-grounding></p>
 

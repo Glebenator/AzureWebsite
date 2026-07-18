@@ -8,15 +8,22 @@ var indexRouter = require('./routes/index');
 var createResearchRouter = require('./routes/research');
 var createResearchRepository = require('./services/research-repository').createResearchRepository;
 var createResearchAssistant = require('./services/research-assistant').createResearchAssistant;
+var createAzureResearchProvider = require('./services/azure-research-provider').createAzureResearchProvider;
 
 function createApp(options) {
   var app = express();
   var researchRepository = options && options.researchRepository
     ? options.researchRepository
     : createResearchRepository();
-  var researchAssistant = options && options.researchAssistant
-    ? options.researchAssistant
-    : createResearchAssistant();
+  var researchAssistant;
+  if (options && options.researchAssistant) {
+    researchAssistant = options.researchAssistant;
+  } else {
+    var researchProvider = options && Object.prototype.hasOwnProperty.call(options, 'researchProvider')
+      ? options.researchProvider
+      : createAzureResearchProvider();
+    researchAssistant = createResearchAssistant({ provider: researchProvider });
+  }
 
   app.disable('x-powered-by');
   app.set('env', process.env.NODE_ENV === 'development' ? 'development' : 'production');

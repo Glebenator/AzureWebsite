@@ -10,6 +10,8 @@ const {
   createResearchRepository
 } = require('../services/research-repository');
 const {
+  GUARDRAIL_REFUSAL_ANSWER,
+  NO_EVIDENCE_ANSWER,
   ResearchAssistantInvalidResponseError,
   createResearchAssistant,
   normalizeResponse
@@ -459,6 +461,55 @@ test('research storage failures return a useful public-safe state', async () => 
   }, researchApp);
 });
 
+test('application wires a configured research provider and never serves the local RAG ledger', async () => {
+  const repository = createResearchRepository({
+    containerClient: createMockContainer({
+      'a-useful-research-note.md': researchSource()
+    })
+  });
+  const researchApp = app.createApp({
+    researchRepository: repository,
+    researchProvider: {
+      async retrieve() {
+        return [{
+          id: 'chunk-1',
+          articleSlug: 'a-useful-research-note',
+          articleTitle: 'Indexed title',
+          headingId: 'overview',
+          headingLabel: 'Indexed heading',
+          excerpt: 'A focused research summary.',
+          content: 'A focused research summary with useful context.',
+          sourceEtag: 'etag-a-useful-research-note.md'
+        }];
+      },
+      async generate() {
+        return { status: 'answered', answer: 'The note provides a focused summary. [1]' };
+      }
+    }
+  });
+
+  await withServer(async (baseUrl) => {
+    const page = await fetch(baseUrl + '/research');
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /data-assistant-available="true"/);
+
+    const response = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'What does this note contain?', scope: 'library' })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, 'answered');
+    assert.equal(payload.guardrailMode, 'standard');
+    assert.equal(payload.sources[0].url, '/research/a-useful-research-note#overview');
+
+    const ledger = await fetch(baseUrl + '/RAG_STATUS.html');
+    assert.equal(ledger.status, 404);
+    assert.doesNotMatch(await ledger.text(), /Research RAG implementation ledger/);
+  }, researchApp);
+});
+
 test('research assistant returns a citation-validated answer for the requested scope', async () => {
   const repository = createResearchRepository({
     containerClient: createMockContainer({
@@ -521,12 +572,133 @@ test('research assistant returns a citation-validated answer for the requested s
       limit: 8
     });
     assert.equal(capturedGeneration.evidence.length, 1);
+    assert.equal(capturedGeneration.guardrailMode, 'standard');
     assert.equal(capturedGeneration.evidence[0].title, 'A Useful Research Note');
     assert.equal(capturedGeneration.evidence[0].heading, 'Overview');
     assert.equal(payload.sources[0].number, 1);
     assert.equal(payload.sources[0].url, '/research/a-useful-research-note#overview');
     assert.match(payload.answer, /\[1\]/);
+    assert.equal(payload.guardrailMode, 'standard');
     assert.match(payload.notice, /not medical advice/i);
+  }, researchApp);
+});
+
+test('research assistant guardrail modes preserve grounding and return distinct safe states', async () => {
+  const repository = createResearchRepository({
+    containerClient: createMockContainer({
+      'a-useful-research-note.md': researchSource()
+    })
+  });
+  const retrievals = [];
+  const generations = [];
+  const provider = {
+    async retrieve(request) {
+      retrievals.push(request);
+      if (request.question.includes('missing evidence')) return [];
+      return [{
+        id: `chunk-${retrievals.length}`,
+        articleSlug: 'a-useful-research-note',
+        articleTitle: 'Provider-controlled title',
+        headingId: 'overview',
+        headingLabel: 'Provider-controlled heading',
+        excerpt: 'A focused research summary with useful context.',
+        content: 'A focused research summary with useful context.',
+        sourceEtag: 'etag-a-useful-research-note.md'
+      }];
+    },
+    async generate(request) {
+      generations.push(request);
+      if (request.question.includes('personal health') && request.guardrailMode === 'standard') {
+        return {
+          status: 'guardrail_refusal',
+          answer: 'Provider-authored refusal text must not reach the browser.',
+          followUps: ['Provider-authored follow-up must not reach the browser.']
+        };
+      }
+      return {
+        status: 'answered',
+        answer: 'The published note supports this research summary. [1]'
+      };
+    }
+  };
+  const researchApp = app.createApp({
+    researchAssistant: createResearchAssistant({ provider }),
+    researchRepository: repository
+  });
+
+  async function ask(baseUrl, body) {
+    const response = await fetch(baseUrl + '/research/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    return { response, payload: await response.json() };
+  }
+
+  await withServer(async (baseUrl) => {
+    const invalid = await ask(baseUrl, {
+      question: 'What does this note contain?',
+      scope: 'library',
+      guardrailMode: 'disabled'
+    });
+    assert.equal(invalid.response.status, 400);
+    assert.equal(invalid.payload.error.code, 'invalid_guardrail_mode');
+    assert.equal(retrievals.length, 0);
+    assert.equal(generations.length, 0);
+
+    const standard = await ask(baseUrl, {
+      question: 'What does this note contain?', scope: 'library'
+    });
+    assert.equal(standard.response.status, 200);
+    assert.equal(standard.payload.status, 'answered');
+    assert.equal(standard.payload.guardrailMode, 'standard');
+    assert.equal(generations.at(-1).guardrailMode, 'standard');
+
+    const experimental = await ask(baseUrl, {
+      question: 'Summarize the personal health research language.',
+      scope: 'article',
+      slug: 'a-useful-research-note',
+      guardrailMode: 'experimental'
+    });
+    assert.equal(experimental.response.status, 200);
+    assert.equal(experimental.payload.status, 'answered');
+    assert.equal(experimental.payload.guardrailMode, 'experimental');
+    assert.equal(generations.at(-1).guardrailMode, 'experimental');
+    assert.equal(generations.at(-1).evidence[0].title, 'A Useful Research Note');
+    assert.equal(experimental.payload.sources[0].url, '/research/a-useful-research-note#overview');
+    assert.match(experimental.payload.notice, /not medical advice/i);
+    assert.deepEqual(retrievals.at(-1), {
+      question: 'Summarize the personal health research language.',
+      scope: 'article',
+      slug: 'a-useful-research-note',
+      limit: 8
+    });
+
+    const noEvidence = await ask(baseUrl, {
+      question: 'What missing evidence is available?',
+      scope: 'library',
+      guardrailMode: 'experimental'
+    });
+    assert.equal(noEvidence.response.status, 200);
+    assert.equal(noEvidence.payload.status, 'no_evidence');
+    assert.equal(noEvidence.payload.guardrailMode, 'experimental');
+    assert.equal(noEvidence.payload.answer, NO_EVIDENCE_ANSWER);
+    assert.deepEqual(noEvidence.payload.sources, []);
+    assert.deepEqual(noEvidence.payload.followUps, []);
+
+    const refusal = await ask(baseUrl, {
+      question: 'Give me a personal health recommendation.',
+      scope: 'library',
+      guardrailMode: 'standard'
+    });
+    assert.equal(refusal.response.status, 200);
+    assert.equal(refusal.payload.status, 'guardrail_refusal');
+    assert.equal(refusal.payload.guardrailMode, 'standard');
+    assert.equal(refusal.payload.answer, GUARDRAIL_REFUSAL_ANSWER);
+    assert.notEqual(refusal.payload.answer, NO_EVIDENCE_ANSWER);
+    assert.deepEqual(refusal.payload.sources, []);
+    assert.deepEqual(refusal.payload.followUps, []);
+    assert.doesNotMatch(JSON.stringify(refusal.payload), /Provider-authored/);
   }, researchApp);
 });
 

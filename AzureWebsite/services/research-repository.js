@@ -677,6 +677,7 @@ function createResearchRepository(options = {}) {
           heading: heading.label,
           sourceEtag: entry.etag,
           title: article.title,
+          topicKey: article.topic.key,
           url: `/research/${articleSlug}#${headingId}`
         };
       } catch (error) {

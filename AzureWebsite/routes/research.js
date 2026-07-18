@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const express = require('express');
 const { ResearchStorageError } = require('../services/research-repository');
 const {
@@ -18,6 +19,22 @@ const SORT_OPTIONS = Object.freeze({
   longest: 'Longest read'
 });
 const FILTER_TOPIC_KEYS = ['health', 'technology', 'engineering', 'security', 'culture'];
+const GUARDRAIL_MODES = new Set(['standard', 'experimental']);
+const DEFAULT_DAILY_ASSISTANT_LIMIT = 25;
+const MIN_DAILY_ASSISTANT_LIMIT = 1;
+const MAX_DAILY_ASSISTANT_LIMIT = 250;
+const GLOBAL_ASSISTANT_CONCURRENCY = 1;
+const MAX_UPSTREAM_RETRY_AFTER_SECONDS = 120;
+const PROVIDER_ERROR_KINDS = new Set([
+  'authentication',
+  'authorization',
+  'configuration',
+  'grounding',
+  'throttled',
+  'timeout',
+  'unavailable',
+  'upstream'
+]);
 
 const dateFormatter = new Intl.DateTimeFormat('en-CA', {
   dateStyle: 'medium',
@@ -40,6 +57,11 @@ function renderUnavailable(res) {
 function queryStringValue(value, maximumLength) {
   if (typeof value !== 'string') return '';
   return value.replace(/\s+/g, ' ').trim().slice(0, maximumLength);
+}
+
+function normalizeGuardrailMode(value) {
+  if (value === undefined) return 'standard';
+  return typeof value === 'string' && GUARDRAIL_MODES.has(value) ? value : null;
 }
 
 function searchableText(value) {
@@ -112,9 +134,153 @@ function assistantError(res, status, code, message, extra = {}) {
   });
 }
 
-function createResearchRouter(repository, assistant) {
+function safeCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function boundedRetryAfter(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 30;
+  return Math.min(MAX_UPSTREAM_RETRY_AFTER_SECONDS, Math.max(1, Math.ceil(parsed)));
+}
+
+function boundedDailyLimit(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_DAILY_ASSISTANT_LIMIT;
+  return Math.min(MAX_DAILY_ASSISTANT_LIMIT, Math.max(MIN_DAILY_ASSISTANT_LIMIT, parsed));
+}
+
+function utcDay(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function secondsUntilNextUtcDay(value) {
+  const current = new Date(value);
+  const nextUtcDay = Date.UTC(
+    current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate() + 1
+  );
+  return Math.min(24 * 60 * 60, Math.max(1, Math.ceil((nextUtcDay - value) / 1000)));
+}
+
+function createAssistantCostGuard(options = {}) {
+  const now = options.now || Date.now;
+  const dailyLimit = boundedDailyLimit(
+    options.dailyLimit === undefined ? process.env.RESEARCH_ASSISTANT_DAILY_LIMIT : options.dailyLimit
+  );
+  let active = 0;
+  let day = utcDay(now());
+  let starts = 0;
+
+  return {
+    tryStart() {
+      const currentTime = now();
+      const currentDay = utcDay(currentTime);
+      if (currentDay !== day) {
+        day = currentDay;
+        starts = 0;
+      }
+      if (active >= GLOBAL_ASSISTANT_CONCURRENCY) {
+        return { allowed: false, category: 'concurrency_limited', retryAfterSeconds: 1 };
+      }
+      if (starts >= dailyLimit) {
+        return {
+          allowed: false,
+          category: 'daily_limited',
+          retryAfterSeconds: secondsUntilNextUtcDay(currentTime)
+        };
+      }
+
+      active += 1;
+      starts += 1;
+      let released = false;
+      return {
+        allowed: true,
+        release() {
+          if (released) return;
+          released = true;
+          active = Math.max(0, active - 1);
+        }
+      };
+    }
+  };
+}
+
+function providerErrorKind(error) {
+  const kind = error && typeof error.researchAssistantErrorKind === 'string'
+    ? error.researchAssistantErrorKind
+    : '';
+  return PROVIDER_ERROR_KINDS.has(kind) ? kind : '';
+}
+
+function publicProviderFailure(error) {
+  const kind = providerErrorKind(error);
+  if (!kind) return null;
+  if (kind === 'throttled') {
+    const retryAfterSeconds = boundedRetryAfter(error.retryAfterSeconds);
+    return {
+      code: 'assistant_busy',
+      extra: { retryAfterSeconds },
+      kind,
+      message: 'The answer service is busy. Please try again shortly.',
+      retryAfterSeconds,
+      status: 503
+    };
+  }
+  if (kind === 'timeout') {
+    return {
+      code: 'assistant_timeout',
+      kind,
+      message: 'The source-grounded answer took too long. Please try again.',
+      status: 504
+    };
+  }
+  if (kind === 'grounding') {
+    return {
+      code: 'grounding_failed',
+      kind,
+      message: 'The answer could not be verified against its sources.',
+      status: 502
+    };
+  }
+  if (kind === 'upstream') {
+    return {
+      code: 'assistant_upstream_failed',
+      kind,
+      message: 'The source-grounded answer could not be completed.',
+      status: 502
+    };
+  }
+  return {
+    code: 'assistant_unavailable',
+    kind,
+    message: 'Source-grounded answers are temporarily unavailable.',
+    status: 503
+  };
+}
+
+function logAssistantRequest(detail) {
+  const event = {
+    event: 'research_assistant_request',
+    requestId: detail.requestId,
+    scope: detail.scope,
+    slug: detail.slug || undefined,
+    guardrailMode: GUARDRAIL_MODES.has(detail.guardrailMode) ? detail.guardrailMode : undefined,
+    durationMs: Math.max(0, Date.now() - detail.startedAt),
+    category: detail.category,
+    status: detail.status,
+    retrievedCount: safeCount(detail.retrievedCount),
+    canonicalCount: safeCount(detail.canonicalCount),
+    sourceCount: safeCount(detail.sourceCount),
+    retrievalDurationMs: safeCount(detail.retrievalDurationMs),
+    generationDurationMs: safeCount(detail.generationDurationMs)
+  };
+  console.info(JSON.stringify(event));
+}
+
+function createResearchRouter(repository, assistant, options = {}) {
   const router = express.Router();
   const checkRateLimit = createResearchRateLimiter();
+  const checkCostGuard = createAssistantCostGuard(options.costGuard);
 
   router.get('/', async function(req, res, next) {
     try {
@@ -153,6 +319,8 @@ function createResearchRouter(repository, assistant) {
 
   router.post('/ask', async function(req, res, next) {
     res.set('Cache-Control', 'no-store');
+    const requestId = crypto.randomUUID();
+    res.set('X-Request-Id', requestId);
 
     if (!sameOriginRequest(req)) {
       return assistantError(res, 403, 'origin_rejected', 'This request must come from the research viewer.');
@@ -171,6 +339,16 @@ function createResearchRouter(repository, assistant) {
       );
     }
 
+    const guardrailMode = normalizeGuardrailMode(req.body && req.body.guardrailMode);
+    if (!guardrailMode) {
+      return assistantError(
+        res,
+        400,
+        'invalid_guardrail_mode',
+        'Choose either standard or experimental answer guardrails.'
+      );
+    }
+
     const scope = req.body && req.body.scope === 'article' ? 'article' : 'library';
     let slug = '';
     if (scope === 'article') {
@@ -182,7 +360,11 @@ function createResearchRouter(repository, assistant) {
         if (error instanceof ResearchStorageError) {
           return assistantError(res, 503, 'library_unavailable', 'The research library is temporarily unavailable.');
         }
-        return next(error);
+        logAssistantRequest({
+          category: 'internal', guardrailMode, requestId, scope, slug,
+          startedAt: Date.now(), status: 'failed'
+        });
+        return assistantError(res, 500, 'assistant_failed', 'The answer could not be completed.');
       }
     }
 
@@ -207,29 +389,109 @@ function createResearchRouter(repository, assistant) {
       );
     }
 
+    const admission = checkCostGuard.tryStart();
+    if (!admission.allowed) {
+      res.set('Retry-After', String(admission.retryAfterSeconds));
+      logAssistantRequest({
+        category: admission.category,
+        guardrailMode,
+        requestId,
+        scope,
+        slug,
+        startedAt: Date.now(),
+        status: 'limited'
+      });
+      return assistantError(
+        res,
+        503,
+        'assistant_busy',
+        'The answer service is busy. Please try again later.',
+        { retryAfterSeconds: admission.retryAfterSeconds }
+      );
+    }
+
+    const startedAt = Date.now();
+    const telemetry = {
+      requestId,
+      scope,
+      slug,
+      guardrailMode,
+      startedAt
+    };
+    const controller = new AbortController();
+    function abortOnDisconnect() {
+      if (!res.writableEnded) controller.abort();
+    }
+    req.once('aborted', abortOnDisconnect);
+    res.once('close', abortOnDisconnect);
+
     try {
       const response = await assistant.ask({
         question,
         scope,
         slug,
-        resolveEvidenceSource: repository.resolveEvidenceSource.bind(repository)
+        guardrailMode,
+        signal: controller.signal,
+        resolveEvidenceSource: repository.resolveEvidenceSource.bind(repository),
+        observe(detail) {
+          if (!detail || typeof detail !== 'object') return;
+          if (detail.stage === 'retrieval') {
+            telemetry.retrievedCount = safeCount(detail.count);
+            telemetry.retrievalDurationMs = safeCount(detail.durationMs);
+          } else if (detail.stage === 'canonicalization') {
+            telemetry.canonicalCount = safeCount(detail.count);
+          } else if (detail.stage === 'generation') {
+            telemetry.generationDurationMs = safeCount(detail.durationMs);
+          } else if (detail.stage === 'result') {
+            telemetry.sourceCount = safeCount(detail.sourceCount);
+          }
+        }
       });
+      const responseGuardrailMode = response.guardrailMode === 'experimental'
+        ? 'experimental'
+        : 'standard';
+      logAssistantRequest({ ...telemetry, category: response.status, status: 'completed' });
       return res.json({
         ...response,
-        notice: 'Research summary only, not medical advice. Do not use it for personal health decisions.'
+        guardrailMode: responseGuardrailMode,
+        notice: responseGuardrailMode === 'experimental'
+          ? 'Experimental answer-writing mode. Citations remain enforced. This is not medical advice and must not guide personal health decisions.'
+          : 'Research summary only, not medical advice. Do not use it for personal health decisions.'
       });
     } catch (error) {
+      if (controller.signal.aborted && !res.writableEnded) return undefined;
       if (error instanceof ResearchStorageError) {
+        logAssistantRequest({ ...telemetry, category: 'library_unavailable', status: 'failed' });
         return assistantError(res, 503, 'library_unavailable', 'The research library is temporarily unavailable.');
       }
       if (error instanceof ResearchAssistantUnavailableError) {
+        logAssistantRequest({ ...telemetry, category: 'unavailable', status: 'failed' });
         return assistantError(res, 503, 'assistant_unavailable', 'Source-grounded answers are temporarily unavailable.');
       }
       if (error instanceof ResearchAssistantInvalidResponseError) {
-        console.error(error);
+        logAssistantRequest({ ...telemetry, category: 'grounding_failed', status: 'failed' });
         return assistantError(res, 502, 'grounding_failed', 'The answer could not be verified against its sources.');
       }
-      return next(error);
+      const providerFailure = publicProviderFailure(error);
+      if (providerFailure) {
+        logAssistantRequest({ ...telemetry, category: providerFailure.kind, status: 'failed' });
+        if (providerFailure.retryAfterSeconds) {
+          res.set('Retry-After', String(providerFailure.retryAfterSeconds));
+        }
+        return assistantError(
+          res,
+          providerFailure.status,
+          providerFailure.code,
+          providerFailure.message,
+          providerFailure.extra
+        );
+      }
+      logAssistantRequest({ ...telemetry, category: 'internal', status: 'failed' });
+      return assistantError(res, 500, 'assistant_failed', 'The answer could not be completed.');
+    } finally {
+      admission.release();
+      req.removeListener('aborted', abortOnDisconnect);
+      res.removeListener('close', abortOnDisconnect);
     }
   });
 
@@ -260,3 +522,4 @@ function createResearchRouter(repository, assistant) {
 module.exports = createResearchRouter;
 module.exports.assistantViewModel = assistantViewModel;
 module.exports.filterAndSortArticles = filterAndSortArticles;
+module.exports.normalizeGuardrailMode = normalizeGuardrailMode;
