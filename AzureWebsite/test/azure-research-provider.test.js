@@ -173,6 +173,79 @@ test('hybrid retrieval combines the keyword query with a validated embedding and
   assert.deepEqual(fallbackObservations, [{ stage: 'retrieval_mode', mode: 'keyword_fallback', category: 'embedding_unavailable' }]);
 });
 
+test('comparison retrieval expands candidates and prevents one article from consuming the evidence window', async () => {
+  let request;
+  const values = [];
+  for (let index = 0; index < 9; index += 1) {
+    values.push({
+      id: `d-${index}`,
+      articleSlug: 'vitamin-d-note',
+      articleTitle: 'Vitamin D Note',
+      headingId: `finding-${index}`,
+      headingLabel: `Finding ${index}`,
+      content: `Vitamin D finding ${index}.`,
+      sourceEtag: 'd-etag'
+    });
+  }
+  for (let index = 0; index < 4; index += 1) {
+    values.push({
+      id: `c-${index}`,
+      articleSlug: 'vitamin-c-note',
+      articleTitle: 'Vitamin C Note',
+      headingId: `finding-${index}`,
+      headingLabel: `Finding ${index}`,
+      content: `Vitamin C finding ${index}.`,
+      sourceEtag: 'c-etag'
+    });
+  }
+  const provider = createAzureResearchProvider({
+    env: environment(), credential: credential(),
+    async fetch(_url, options) { request = JSON.parse(options.body); return json({ value: values }); }
+  });
+  const result = await provider.retrieve({
+    question: 'How do vitamin C and vitamin D differ?', scope: 'library', slug: '', limit: 8
+  });
+  assert.equal(request.top, 32);
+  assert.equal(result.length, 8);
+  assert.equal(result.filter((item) => item.articleSlug === 'vitamin-d-note').length, 4);
+  assert.equal(result.filter((item) => item.articleSlug === 'vitamin-c-note').length, 4);
+});
+
+test('catalog-targeted comparisons run filtered searches and interleave evidence from every article', async () => {
+  const requests = [];
+  const provider = createAzureResearchProvider({
+    env: environment(), credential: credential(),
+    async fetch(_url, options) {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      const slug = request.filter.match(/'([^']+)'/)[1];
+      return json({ value: Array.from({ length: 8 }, (_, index) => ({
+        id: `${slug}-${index}`,
+        articleSlug: slug,
+        articleTitle: slug === 'vitamin-c-note' ? 'Vitamin C Note' : 'Vitamin D Note',
+        headingId: `finding-${index}`,
+        headingLabel: `Finding ${index}`,
+        content: `Finding ${index} from ${slug}.`,
+        sourceEtag: `${slug}-etag`
+      })) });
+    }
+  });
+  const result = await provider.retrieve({
+    question: 'How do vitamin C and vitamin D differ?',
+    scope: 'library', slug: '', limit: 8,
+    targetSlugs: ['vitamin-c-note', 'vitamin-d-note']
+  });
+  assert.deepEqual(requests.map((request) => request.filter), [
+    "articleSlug eq 'vitamin-c-note'",
+    "articleSlug eq 'vitamin-d-note'"
+  ]);
+  assert.ok(requests.every((request) => request.top === 8));
+  assert.deepEqual(result.map((item) => item.articleSlug), [
+    'vitamin-c-note', 'vitamin-d-note', 'vitamin-c-note', 'vitamin-d-note',
+    'vitamin-c-note', 'vitamin-d-note', 'vitamin-c-note', 'vitamin-d-note'
+  ]);
+});
+
 test('retrieval mode accepts only keyword or hybrid', () => {
   assert.throws(
     () => createAzureResearchProvider({ env: environment({ RESEARCH_RETRIEVAL_MODE: 'vector-only' }) }),

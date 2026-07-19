@@ -10,6 +10,7 @@ const {
   NO_EVIDENCE_ANSWER,
   ResearchAssistantInvalidResponseError,
   ResearchAssistantUnavailableError,
+  comparisonTargetSlugs,
   createResearchAssistant
 } = require('../services/research-assistant');
 const { createResearchRepository } = require('../services/research-repository');
@@ -72,6 +73,7 @@ function createAskRouteInvoker(
 ) {
   const repository = {
     async getArticle(slug) { return { slug }; },
+    async listArticles() { return []; },
     async resolveEvidenceSource() { return null; },
     ...repositoryOverride
   };
@@ -127,6 +129,45 @@ async function invokeAskRoute(
 ) {
   return createAskRouteInvoker(assistant, repositoryOverride)(body);
 }
+
+test('comparison target detection resolves two published articles without treating generic terms as targets', () => {
+  const articles = [
+    { slug: 'vitamin-c-supplementation-functions-benefits-risks', title: 'Vitamin C Supplementation: Functions, Benefits, Risks' },
+    { slug: 'vitamin-d-supplementation-research-overview', title: 'Vitamin D Supplementation Research Overview' },
+    { slug: 'creatine-for-endometriosis-symptom-management', title: 'Creatine for Endometriosis Symptom Management' }
+  ];
+  assert.deepEqual(
+    comparisonTargetSlugs('How do supplementation protocols differ for vitamin C and vitamin D?', articles),
+    [
+      'vitamin-c-supplementation-functions-benefits-risks',
+      'vitamin-d-supplementation-research-overview'
+    ]
+  );
+  assert.deepEqual(comparisonTargetSlugs('What does vitamin C research say?', articles), []);
+  assert.deepEqual(comparisonTargetSlugs('Compare supplementation research approaches', articles), []);
+});
+
+test('assistant passes catalog-derived comparison targets to retrieval', async () => {
+  let retrievalRequest;
+  const assistant = createResearchAssistant({
+    provider: {
+      async retrieve(request) { retrievalRequest = request; return []; },
+      async generate() { assert.fail('Generation must not run without evidence.'); }
+    }
+  });
+  const articles = [
+    { slug: 'vitamin-c-supplementation-functions-benefits-risks', title: 'Vitamin C Supplementation: Functions, Benefits, Risks' },
+    { slug: 'vitamin-d-supplementation-research-overview', title: 'Vitamin D Supplementation Research Overview' }
+  ];
+  await assistant.ask({
+    articles,
+    question: 'How do supplementation protocols differ for vitamin C and vitamin D?',
+    scope: 'library',
+    resolveEvidenceSource: resolver
+  });
+  assert.deepEqual(retrievalRequest.targetSlugs, articles.map((article) => article.slug));
+  assert.equal(retrievalRequest.guardrailMode, 'standard');
+});
 
 test('repository resolves only current catalog entries and rendered headings', async () => {
   const source = [

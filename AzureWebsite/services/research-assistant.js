@@ -22,6 +22,14 @@ const SAFE_FOLLOW_UPS = Object.freeze({
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const HEADING_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TOPIC_KEYS = new Set(['health', 'technology', 'engineering', 'security', 'culture', 'other']);
+const COMPARISON_PATTERN = /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.?)\b/i;
+const GENERIC_TITLE_TERMS = new Set([
+  'analysis', 'benefits', 'comprehensive', 'effects', 'explained', 'functions', 'health',
+  'latest', 'overview', 'research', 'risks', 'state', 'supplementation', 'understanding'
+]);
+const TITLE_STOP_TERMS = new Set([
+  'a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'vs', 'with'
+]);
 
 class ResearchAssistantUnavailableError extends Error {
   constructor(message = 'The research assistant is not configured.') {
@@ -53,6 +61,66 @@ function normalizeGuardrailMode(value) {
     ? DEFAULT_GUARDRAIL_MODE
     : String(value).trim().toLowerCase();
   return GUARDRAIL_MODES.has(normalized) ? normalized : null;
+}
+
+function searchableTerms(value) {
+  return String(value || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+function comparisonTargetSlugs(question, articles) {
+  const normalizedQuestion = safeText(question, MAX_QUESTION_LENGTH).toLowerCase();
+  if (!COMPARISON_PATTERN.test(normalizedQuestion) || !Array.isArray(articles)) return [];
+
+  const catalog = articles.slice(0, 100).map((article) => {
+    const slug = safeText(article?.slug, 180).toLowerCase();
+    const title = safeText(article?.title, 240);
+    if (!SLUG_PATTERN.test(slug) || !title) return null;
+    return { slug, title, terms: searchableTerms(title) };
+  }).filter(Boolean);
+  const questionTerms = searchableTerms(normalizedQuestion);
+  const questionTermSet = new Set(questionTerms);
+  const questionPairs = new Map();
+  for (let index = 0; index < questionTerms.length - 1; index += 1) {
+    const pair = `${questionTerms[index]} ${questionTerms[index + 1]}`;
+    if (!questionPairs.has(pair)) questionPairs.set(pair, index);
+  }
+
+  const documentFrequency = new Map();
+  for (const article of catalog) {
+    for (const term of new Set(article.terms)) {
+      documentFrequency.set(term, (documentFrequency.get(term) || 0) + 1);
+    }
+  }
+
+  const matches = [];
+  for (const article of catalog) {
+    let position = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < article.terms.length - 1; index += 1) {
+      const left = article.terms[index];
+      const right = article.terms[index + 1];
+      if (TITLE_STOP_TERMS.has(left) && TITLE_STOP_TERMS.has(right)) continue;
+      const questionPosition = questionPairs.get(`${left} ${right}`);
+      if (questionPosition !== undefined) position = Math.min(position, questionPosition);
+    }
+    for (const term of article.terms) {
+      if (
+        term.length >= 5
+        && !GENERIC_TITLE_TERMS.has(term)
+        && !TITLE_STOP_TERMS.has(term)
+        && documentFrequency.get(term) === 1
+        && questionTermSet.has(term)
+      ) {
+        position = Math.min(position, questionTerms.indexOf(term));
+      }
+    }
+    if (Number.isFinite(position)) matches.push({ slug: article.slug, position });
+  }
+
+  if (matches.length < 2) return [];
+  return matches
+    .sort((left, right) => left.position - right.position || left.slug.localeCompare(right.slug))
+    .slice(0, 4)
+    .map((match) => match.slug);
 }
 
 function safeResearchUrl(value) {
@@ -257,12 +325,20 @@ function createResearchAssistant(options = {}) {
       }
 
       const retrievalStartedAt = Date.now();
-      const candidates = await provider.retrieve(withRequestContext({
+      const targetSlugs = scope === 'library'
+        ? comparisonTargetSlugs(question, request.articles)
+        : [];
+      const retrievalRequest = {
         question,
         scope,
         slug,
         limit: MAX_EVIDENCE
-      }, { signal: request.signal, guardrailMode }));
+      };
+      if (targetSlugs.length > 1) retrievalRequest.targetSlugs = targetSlugs;
+      const candidates = await provider.retrieve(withRequestContext(
+        retrievalRequest,
+        { signal: request.signal, guardrailMode }
+      ));
       observe(request, {
         count: Array.isArray(candidates) ? candidates.length : 0,
         durationMs: Date.now() - retrievalStartedAt,
@@ -303,6 +379,7 @@ module.exports = {
   NO_EVIDENCE_ANSWER,
   ResearchAssistantInvalidResponseError,
   ResearchAssistantUnavailableError,
+  comparisonTargetSlugs,
   createResearchAssistant,
   normalizeQuestion,
   normalizeResponse: normalizeGeneratedResponse,

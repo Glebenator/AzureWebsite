@@ -13,6 +13,8 @@ const SEARCH_RETRY_DELAYS_MS = [250, 500, 1000];
 const DEFAULT_SEARCH_TIMEOUT_MS = 8000;
 const DEFAULT_GENERATION_TIMEOUT_MS = 30000;
 const MAX_RETRIEVAL_LIMIT = 8;
+const MAX_COMPARISON_CANDIDATES = 32;
+const MAX_COMPARISON_TARGETS = 4;
 const MAX_EVIDENCE_CONTENT = 6000;
 const MAX_CLAIM_LENGTH = 1200;
 const MAX_ANSWER_LENGTH = 6000;
@@ -39,6 +41,7 @@ const ALWAYS_UNSAFE_HEALTH_OUTPUT_PATTERNS = [
   /\b(?:will cure|can cure|cures?)\b/i
 ];
 const HEALTH_CONTEXT_PATTERN = /\b(?:health|medical|medicine|medication|drug|treatment|therapy|diagnos(?:is|e|ed|tic)|symptoms?|disease|disorder|patient|clinical|dose|dosage|mg|mcg|µg|ml|iu|supplements?|vitamins?|nutrition|digest(?:ion|ive)|pain|blood|cardiac|heart|cancer|infection|adverse|side effects?|contraindication|pregnan(?:cy|t)|doctor|physician)\b/i;
+const COMPARISON_PATTERN = /\b(?:compare|comparison|contrast|differ|difference|different|versus|vs\.?)\b/i;
 
 const ANSWER_SCHEMA = {
   type: 'object',
@@ -309,14 +312,68 @@ function retrievalRequest(request) {
     throw new AzureResearchProviderError('provider_invalid_request', 'The retrieval request is invalid.');
   }
 
+  const targetSlugs = Array.isArray(request?.targetSlugs)
+    ? [...new Set(request.targetSlugs.map((value) => safeText(value, 180).toLowerCase()))]
+    : [];
+  if (
+    targetSlugs.length > MAX_COMPARISON_TARGETS
+    || targetSlugs.some((targetSlug) => !SLUG_PATTERN.test(targetSlug))
+    || (scope === 'article' && targetSlugs.length > 0)
+  ) {
+    throw new AzureResearchProviderError('provider_invalid_request', 'The retrieval targets are invalid.');
+  }
+
   return {
     question,
     scope,
     slug,
     limit: Math.min(parsedLimit, MAX_RETRIEVAL_LIMIT),
+    comparison: scope === 'library' && COMPARISON_PATTERN.test(question),
+    targetSlugs,
     guardrailMode: guardrailMode(request?.guardrailMode),
     signal: request?.signal
   };
+}
+
+function mergeTargetedResults(resultSets, limit) {
+  const merged = [];
+  const seenIds = new Set();
+  let ordinal = 0;
+  while (merged.length < limit) {
+    let added = false;
+    for (const results of resultSets) {
+      const candidate = results[ordinal];
+      if (!candidate || seenIds.has(candidate.id)) continue;
+      seenIds.add(candidate.id);
+      merged.push(candidate);
+      added = true;
+      if (merged.length >= limit) break;
+    }
+    if (!added) break;
+    ordinal += 1;
+  }
+  return merged;
+}
+
+function diversifyComparisonResults(results, limit) {
+  const perArticleLimit = Math.max(1, Math.ceil(limit / 2));
+  const selected = [];
+  const deferred = [];
+  const counts = new Map();
+  for (const result of results) {
+    const count = counts.get(result.articleSlug) || 0;
+    if (count < perArticleLimit) {
+      counts.set(result.articleSlug, count + 1);
+      selected.push(result);
+    } else {
+      deferred.push(result);
+    }
+    if (selected.length >= limit) break;
+  }
+  if (selected.length < limit) {
+    selected.push(...deferred.slice(0, limit - selected.length));
+  }
+  return selected.slice(0, limit);
 }
 
 function normalizeSearchResults(value) {
@@ -566,11 +623,14 @@ function createAzureResearchProvider(options = {}) {
   return {
     async retrieve(request) {
       const normalized = retrievalRequest(request);
+      const candidateLimit = normalized.comparison && normalized.targetSlugs.length < 2
+        ? Math.min(MAX_COMPARISON_CANDIDATES, normalized.limit * 4)
+        : normalized.limit;
       const body = {
         search: normalized.question,
         queryType: 'simple',
         searchMode: 'any',
-        top: normalized.limit,
+        top: candidateLimit,
         select: 'id,articleSlug,articleTitle,headingId,headingLabel,content,sourceEtag'
       };
       if (normalized.scope === 'article') {
@@ -585,7 +645,7 @@ function createAzureResearchProvider(options = {}) {
             kind: 'vector',
             vector,
             fields: 'contentVector',
-            k: Math.min(50, Math.max(20, normalized.limit * 4))
+            k: Math.min(50, Math.max(20, candidateLimit * 4))
           }];
           body.vectorFilterMode = normalized.scope === 'article' ? 'preFilter' : 'postFilter';
           actualRetrievalMode = 'hybrid';
@@ -602,30 +662,47 @@ function createAzureResearchProvider(options = {}) {
         ...(actualRetrievalMode === 'keyword_fallback' ? { category: 'embedding_unavailable' } : {})
       });
 
-      let response;
-      for (let attempt = 0; attempt <= SEARCH_RETRY_DELAYS_MS.length; attempt += 1) {
-        const token = await accessToken(credential, SEARCH_SCOPE);
-        response = await timedFetch(
-          fetchImplementation,
-          `${searchEndpoint}/indexes/${encodeURIComponent(searchIndex)}/docs/search?api-version=${SEARCH_API_VERSION}`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json'
+      async function search(searchBody) {
+        let response;
+        for (let attempt = 0; attempt <= SEARCH_RETRY_DELAYS_MS.length; attempt += 1) {
+          const token = await accessToken(credential, SEARCH_SCOPE);
+          response = await timedFetch(
+            fetchImplementation,
+            `${searchEndpoint}/indexes/${encodeURIComponent(searchIndex)}/docs/search?api-version=${SEARCH_API_VERSION}`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(searchBody)
             },
-            body: JSON.stringify(body)
-          },
-          searchTimeoutMs,
-          normalized.signal
-        );
-        if (response.ok) return normalizeSearchResults(await jsonResponse(response));
-        if ((response.status !== 429 && response.status !== 503) || attempt === SEARCH_RETRY_DELAYS_MS.length) {
-          throw errorForStatus(response);
+            searchTimeoutMs,
+            normalized.signal
+          );
+          if (response.ok) return normalizeSearchResults(await jsonResponse(response));
+          if ((response.status !== 429 && response.status !== 503) || attempt === SEARCH_RETRY_DELAYS_MS.length) {
+            throw errorForStatus(response);
+          }
+          await sleep(SEARCH_RETRY_DELAYS_MS[attempt]);
         }
-        await sleep(SEARCH_RETRY_DELAYS_MS[attempt]);
+        throw errorForStatus(response || { status: 503 });
       }
-      throw errorForStatus(response || { status: 503 });
+
+      if (normalized.targetSlugs.length > 1) {
+        const resultSets = await Promise.all(normalized.targetSlugs.map((targetSlug) => search({
+          ...body,
+          top: normalized.limit,
+          filter: `articleSlug eq '${odataString(targetSlug)}'`,
+          ...(body.vectorQueries ? { vectorFilterMode: 'preFilter' } : {})
+        })));
+        return mergeTargetedResults(resultSets, normalized.limit);
+      }
+
+      const results = await search(body);
+      return normalized.comparison
+        ? diversifyComparisonResults(results, normalized.limit)
+        : results.slice(0, normalized.limit);
     },
 
     async generate(request) {
@@ -700,6 +777,7 @@ module.exports = {
   SEARCH_SCOPE,
   DEFAULT_GUARDRAIL_MODE,
   DEFAULT_RETRIEVAL_MODE,
+  diversifyComparisonResults,
   createAzureResearchProvider,
   containsUnsafeHealthOutput,
   parseGeneratedResponse

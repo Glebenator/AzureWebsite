@@ -5,6 +5,7 @@
   { "id": "cross-topic-substance", "scope": "library", "slug": "", "expectedSlug": "marijuana-consumption-effects-research" },
   { "id": "health-nutrition", "scope": "library", "slug": "", "expectedSlug": "muscle-growth-nutrient-requirements-explained" },
   { "id": "technical-security", "scope": "library", "slug": "", "expectedSlug": "bypassing-buffer-overflow-mitigations" },
+  { "id": "comparison-vitamin-c-d", "scope": "library", "slug": "", "expectedSlugs": ["vitamin-c-supplementation-functions-benefits-risks", "vitamin-d-supplementation-research-overview"] },
   { "id": "article-scope-vitamin-c", "scope": "article", "slug": "vitamin-c-supplementation-functions-benefits-risks", "expectedSlug": "vitamin-c-supplementation-functions-benefits-risks" },
   { "id": "article-scope-culture", "scope": "article", "slug": "music-taste-factors-and-personality", "expectedSlug": "music-taste-factors-and-personality" }
 ]

@@ -38,7 +38,9 @@ The App Service managed identity has **Search Index Data Reader**. A separate in
 npm run research:index
 ```
 
-Production retrieval uses one Azure AI Search hybrid request: the keyword query plus a 1,536-dimension `contentVector` query. Every v2 chunk is embedded from a deterministic title, heading path, heading label, and bounded chunk representation; the indexer validates every vector locally and again after upload. A deterministic eight-query evaluation improved top-1 expected retrieval from 7/8 to 8/8, with no scope or stale-grounding leakage. `research-chunks-v1` remains the rollback index.
+Standard production retrieval uses one Azure AI Search hybrid request: the keyword query plus a 1,536-dimension `contentVector` query. Every v2 chunk is embedded from a deterministic title, heading path, heading label, and bounded chunk representation; the indexer validates every vector locally and again after upload. A deterministic nine-query evaluation requires every expected article to appear in the eight-chunk evidence window in both modes; hybrid retrieval currently ranks the primary expected article first for all nine queries, with no scope or stale-grounding leakage. `research-chunks-v1` remains the rollback index.
+
+Library comparisons are catalog-aware. When a question explicitly names two or more published notes, retrieval runs one filtered hybrid search per note and interleaves their ranked chunks before the eight-evidence grounding limit. Ambiguous comparison wording expands to 32 candidates and caps any one article at half of the final evidence window. The retrieval evaluation includes a two-article vitamin C/vitamin D regression and fails unless every expected article is represented.
 
 Index synchronization enumerates every existing document before removing stale chunks, checks each per-document result, and retries only transient Azure AI Search failures. The command exits unsuccessfully if any embedding or indexing action remains failed; it must not be treated as successful from its HTTP status alone.
 

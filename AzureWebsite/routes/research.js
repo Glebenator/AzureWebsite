@@ -432,7 +432,9 @@ function createResearchRouter(repository, assistant, options = {}) {
     res.once('close', abortOnDisconnect);
 
     try {
+      const articles = scope === 'library' ? await repository.listArticles() : [];
       const response = await assistant.ask({
+        articles,
         question,
         scope,
         slug,

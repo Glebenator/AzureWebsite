@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const evaluationSet = require('../data/retrieval-evaluation.json');
 const { createAzureResearchProvider } = require('../services/azure-research-provider');
+const { comparisonTargetSlugs } = require('../services/research-assistant');
 const { createResearchRepository } = require('../services/research-repository');
 
 const QUESTIONS = Object.freeze({
@@ -13,6 +14,7 @@ const QUESTIONS = Object.freeze({
   'cross-topic-substance': 'research effects of cannabis consumption',
   'health-nutrition': 'dietary requirements associated with building muscle',
   'technical-security': 'techniques that circumvent memory corruption defenses',
+  'comparison-vitamin-c-d': 'How do supplementation protocols differ for vitamin C and vitamin D?',
   'article-scope-vitamin-c': 'What functions, benefits, and risks are covered?',
   'article-scope-culture': 'What factors are associated with musical preference?'
 });
@@ -22,17 +24,24 @@ function rank(results, expectedSlug) {
   return index === -1 ? null : index + 1;
 }
 
+function expectedSlugs(item) {
+  return Array.isArray(item.expectedSlugs) ? item.expectedSlugs : [item.expectedSlug];
+}
+
 async function runMode(mode) {
   const provider = createAzureResearchProvider({
     env: { ...process.env, RESEARCH_ASSISTANT_ENABLED: 'true', RESEARCH_RETRIEVAL_MODE: mode }
   });
   if (!provider) throw new Error('Research provider is not configured.');
   const repository = createResearchRepository();
+  const articles = await repository.listArticles();
   const results = [];
   for (const item of evaluationSet) {
     const observations = [];
+    const question = QUESTIONS[item.id];
     const chunks = await provider.retrieve({
-      question: QUESTIONS[item.id], scope: item.scope, slug: item.slug, limit: 8,
+      question, scope: item.scope, slug: item.slug, limit: 8,
+      targetSlugs: comparisonTargetSlugs(question, articles),
       observe: (detail) => observations.push(detail)
     });
     const scopeLeak = item.scope === 'article' && chunks.some((chunk) => chunk.articleSlug !== item.slug);
@@ -49,7 +58,7 @@ async function runMode(mode) {
     results.push({
       id: item.id,
       mode: observations.find((detail) => detail.stage === 'retrieval_mode')?.mode || 'unknown',
-      expectedRank: rank(chunks, item.expectedSlug),
+      expectedRanks: expectedSlugs(item).map((slug) => ({ slug, rank: rank(chunks, slug) })),
       scopeLeak,
       groundingRejects,
       ranked: chunks.map((chunk) => ({ id: chunk.id, slug: chunk.articleSlug, heading: chunk.headingId }))
@@ -61,8 +70,9 @@ async function runMode(mode) {
 function summary(results) {
   return {
     queryCount: results.length,
-    expectedTop1: results.filter((item) => item.expectedRank === 1).length,
-    expectedTop8: results.filter((item) => item.expectedRank !== null).length,
+    expectedTop1: results.filter((item) => item.expectedRanks[0].rank === 1).length,
+    expectedTop8: results.filter((item) => item.expectedRanks.every((entry) => entry.rank !== null)).length,
+    coverageFailures: results.filter((item) => item.expectedRanks.some((entry) => entry.rank === null)).length,
     scopeLeaks: results.filter((item) => item.scopeLeak).length,
     groundingRejects: results.reduce((total, item) => total + item.groundingRejects, 0),
     fallbackCount: results.filter((item) => item.mode === 'keyword_fallback').length
@@ -74,8 +84,8 @@ function comparison(keyword, hybrid) {
   let regressed = 0;
   let neutral = 0;
   for (let index = 0; index < keyword.length; index += 1) {
-    const keywordRank = keyword[index].expectedRank || 9;
-    const hybridRank = hybrid[index].expectedRank || 9;
+    const keywordRank = Math.max(...keyword[index].expectedRanks.map((entry) => entry.rank || 9));
+    const hybridRank = Math.max(...hybrid[index].expectedRanks.map((entry) => entry.rank || 9));
     if (hybridRank < keywordRank) improved += 1;
     else if (hybridRank > keywordRank) regressed += 1;
     else neutral += 1;
@@ -95,7 +105,7 @@ async function main() {
     generatedAt: new Date().toISOString(), keyword, hybrid,
     summary: { keyword: summary(keyword), hybrid: summary(hybrid), comparison: comparison(keyword, hybrid) }
   };
-  if (report.summary.keyword.scopeLeaks || report.summary.hybrid.scopeLeaks || report.summary.hybrid.fallbackCount || report.summary.keyword.groundingRejects || report.summary.hybrid.groundingRejects || report.summary.comparison.verdict === 'regressed') {
+  if (report.summary.keyword.scopeLeaks || report.summary.hybrid.scopeLeaks || report.summary.keyword.coverageFailures || report.summary.hybrid.coverageFailures || report.summary.hybrid.fallbackCount || report.summary.keyword.groundingRejects || report.summary.hybrid.groundingRejects || report.summary.comparison.verdict === 'regressed') {
     throw new Error('Retrieval evaluation failed its scope-leak, stale-grounding, hybrid-fallback, or ranking-regression gate.');
   }
   const output = path.resolve(__dirname, '../../artifacts/local/VECTOR_RETRIEVAL_EVALUATION.json');
