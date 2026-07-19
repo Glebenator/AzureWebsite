@@ -140,6 +140,50 @@ test('retrieve uses managed identity, keyword search, canonical fields, and arti
   assert.doesNotMatch(JSON.stringify(result), /invented\.example/);
 });
 
+test('hybrid retrieval combines the keyword query with a validated embedding and falls back explicitly', async () => {
+  const requests = [];
+  const observations = [];
+  const vector = Array.from({ length: 1536 }, () => 0.25);
+  const provider = createAzureResearchProvider({
+    env: environment({
+      RESEARCH_RETRIEVAL_MODE: 'hybrid',
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT: 'research-embedding-3-small'
+    }),
+    credential: credential(),
+    embeddingClient: { async embed() { return [vector]; } },
+    async fetch(_url, options) { requests.push(JSON.parse(options.body)); return json({ value: [] }); }
+  });
+  await provider.retrieve({ question: 'paraphrased question', scope: 'article', slug: 'grounded-note', limit: 8, observe: (detail) => observations.push(detail) });
+  assert.equal(requests[0].search, 'paraphrased question');
+  assert.deepEqual(requests[0].vectorQueries, [{ kind: 'vector', vector, fields: 'contentVector', k: 32 }]);
+  assert.equal(requests[0].vectorFilterMode, 'preFilter');
+  assert.deepEqual(observations, [{ stage: 'retrieval_mode', mode: 'hybrid' }]);
+
+  const fallbackObservations = [];
+  const fallback = createAzureResearchProvider({
+    env: environment({ RESEARCH_RETRIEVAL_MODE: 'hybrid', AZURE_OPENAI_EMBEDDING_DEPLOYMENT: 'research-embedding-3-small' }),
+    credential: credential(),
+    embeddingClient: { async embed() {
+      const { AzureEmbeddingError } = require('../services/azure-embedding-client');
+      throw new AzureEmbeddingError('embedding_unavailable', 'temporary failure', { kind: 'unavailable' });
+    } },
+    async fetch(_url, options) { return json({ value: [] }); }
+  });
+  await fallback.retrieve({ question: 'paraphrased question', scope: 'library', slug: '', limit: 8, observe: (detail) => fallbackObservations.push(detail) });
+  assert.deepEqual(fallbackObservations, [{ stage: 'retrieval_mode', mode: 'keyword_fallback', category: 'embedding_unavailable' }]);
+});
+
+test('retrieval mode accepts only keyword or hybrid', () => {
+  assert.throws(
+    () => createAzureResearchProvider({ env: environment({ RESEARCH_RETRIEVAL_MODE: 'vector-only' }) }),
+    AzureResearchProviderConfigurationError
+  );
+  assert.throws(
+    () => createAzureResearchProvider({ env: environment({ RESEARCH_RETRIEVAL_MODE: 'hybrid' }) }),
+    /AZURE_OPENAI_EMBEDDING_DEPLOYMENT/
+  );
+});
+
 test('retrieve retries only 429 and 503 with bounded delays', async () => {
   const statuses = [429, 503, 200];
   const delays = [];

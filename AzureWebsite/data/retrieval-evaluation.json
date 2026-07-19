@@ -1,0 +1,10 @@
+[
+  { "id": "exact-audio", "scope": "library", "slug": "", "expectedSlug": "understanding-audio-compression-and-quality" },
+  { "id": "paraphrase-tdem", "scope": "library", "slug": "", "expectedSlug": "drone-based-tdem-research-overview" },
+  { "id": "synonym-retinoid", "scope": "library", "slug": "", "expectedSlug": "retinoids-retinol-vs-retinal" },
+  { "id": "cross-topic-substance", "scope": "library", "slug": "", "expectedSlug": "marijuana-consumption-effects-research" },
+  { "id": "health-nutrition", "scope": "library", "slug": "", "expectedSlug": "muscle-growth-nutrient-requirements-explained" },
+  { "id": "technical-security", "scope": "library", "slug": "", "expectedSlug": "bypassing-buffer-overflow-mitigations" },
+  { "id": "article-scope-vitamin-c", "scope": "article", "slug": "vitamin-c-supplementation-functions-benefits-risks", "expectedSlug": "vitamin-c-supplementation-functions-benefits-risks" },
+  { "id": "article-scope-culture", "scope": "article", "slug": "music-taste-factors-and-personality", "expectedSlug": "music-taste-factors-and-personality" }
+]

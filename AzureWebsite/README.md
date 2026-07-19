@@ -29,7 +29,7 @@ The zero-cost Azure AI Search foundation is:
 - Service: `cvkeresearch-search`
 - Region: Canada Central
 - Tier: Free
-- Index: `research-chunks-v1`
+- Production index: `research-chunks-v2` (with `research-chunks-v1` retained for rollback)
 - Authentication: Microsoft Entra ID only; local API-key authentication is disabled
 
 The App Service managed identity has **Search Index Data Reader**. A separate indexing identity needs **Storage Blob Data Reader**, **Search Service Contributor**, and **Search Index Data Contributor**. Free Search cannot use an outbound managed identity, so the heading-aware indexing command reads Blob Storage and pushes chunks to Search using the caller's `DefaultAzureCredential`:
@@ -38,9 +38,9 @@ The App Service managed identity has **Search Index Data Reader**. A separate in
 npm run research:index
 ```
 
-The MVP retrieves from the existing keyword-searchable fields. The index includes a nullable 1,536-dimension vector field for a later embedding deployment, but the application does not claim hybrid/vector retrieval until every live chunk has a verified vector and retrieval evaluation justifies the switch.
+Production retrieval uses one Azure AI Search hybrid request: the keyword query plus a 1,536-dimension `contentVector` query. Every v2 chunk is embedded from a deterministic title, heading path, heading label, and bounded chunk representation; the indexer validates every vector locally and again after upload. A deterministic eight-query evaluation improved top-1 expected retrieval from 7/8 to 8/8, with no scope or stale-grounding leakage. `research-chunks-v1` remains the rollback index.
 
-Index synchronization enumerates every existing document before removing stale chunks, checks each per-document result, and retries only transient Azure AI Search failures. The command exits unsuccessfully if any action remains failed; it must not be treated as successful from its HTTP status alone.
+Index synchronization enumerates every existing document before removing stale chunks, checks each per-document result, and retries only transient Azure AI Search failures. The command exits unsuccessfully if any embedding or indexing action remains failed; it must not be treated as successful from its HTTP status alone.
 
 ### Luna answer generation
 
@@ -51,8 +51,10 @@ The assistant is fail-closed and needs all of these nonsecret settings:
 - `RESEARCH_ASSISTANT_ENABLED`: explicit rollout and rollback switch. Only `true` enables the provider; missing or `false` keeps the existing unavailable UI.
 - `AZURE_OPENAI_ENDPOINT`: HTTPS endpoint for the Entra-only OpenAI account.
 - `AZURE_OPENAI_DEPLOYMENT`: deployed model name, currently `research-luna-2026-07-09`.
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`: nonsecret embedding deployment name, currently `research-embedding-3-small`.
 - `AZURE_SEARCH_ENDPOINT`: HTTPS endpoint for `cvkeresearch-search`.
-- `AZURE_SEARCH_INDEX`: index name, currently `research-chunks-v1`.
+- `AZURE_SEARCH_INDEX`: index name, currently `research-chunks-v2`.
+- `RESEARCH_RETRIEVAL_MODE`: exactly `keyword` (safe default/rollback) or `hybrid` (current production mode). If an embedding request is unavailable, hybrid deliberately falls back to keyword retrieval and emits only mode/category/count/duration telemetry.
 - `RESEARCH_ASSISTANT_DAILY_LIMIT`: optional attempted-provider-start limit per UTC day; defaults to 25 and is bounded from 1 through 250.
 
 Do not add API-key settings. `DefaultAzureCredential` obtains Search and Cognitive Services bearer tokens.

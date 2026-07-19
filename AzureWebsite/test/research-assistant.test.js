@@ -581,6 +581,28 @@ test('ask route maps provider failures to bounded public-safe JSON without loggi
   }
 });
 
+test('ask route records an explicit keyword fallback mode without request content', async () => {
+  const originalInfo = console.info;
+  const logs = [];
+  console.info = (value) => logs.push(String(value));
+  try {
+    const response = await invokeAskRoute({
+      isAvailable() { return true; },
+      async ask(request) {
+        request.observe({ stage: 'retrieval_mode', mode: 'keyword_fallback', category: 'embedding_unavailable' });
+        return { answer: NO_EVIDENCE_ANSWER, followUps: [], guardrailMode: 'standard', sources: [], status: 'no_evidence' };
+      }
+    }, { question: 'private fallback question', scope: 'library' });
+    assert.equal(response.statusCode, 200);
+    const event = JSON.parse(logs.at(-1));
+    assert.equal(event.retrievalMode, 'keyword_fallback');
+    assert.equal(event.retrievalFallbackCategory, 'embedding_unavailable');
+    assert.doesNotMatch(JSON.stringify(event), /private fallback question/);
+  } finally {
+    console.info = originalInfo;
+  }
+});
+
 test('ask route admits only one global provider call and releases capacity afterward', async () => {
   let starts = 0;
   let finishFirst;

@@ -6,6 +6,7 @@
     "start": "node ./bin/www",
     "test": "node --test",
     "research:index": "node ./scripts/index-research.js",
+    "research:evaluate": "node ./scripts/evaluate-retrieval.js",
     "privacy:scan": "node ./scripts/privacy-scan.js",
     "check": "npm test && npm run privacy:scan"
   },

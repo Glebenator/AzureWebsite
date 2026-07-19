@@ -857,6 +857,7 @@ test('research index definition reserves a vector field without requiring vector
 
   assert.equal(definition.name, 'research-chunks-v1');
   assert.equal(vectorField.dimensions, 1536);
+  assert.equal(vectorField.retrievable, true);
   assert.equal(vectorField.vectorSearchProfile, 'research-vector-profile');
   assert.equal(definition.vectorSearch.algorithms[0].kind, 'hnsw');
 });

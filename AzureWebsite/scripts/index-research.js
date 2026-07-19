@@ -4,6 +4,12 @@ const crypto = require('node:crypto');
 const matter = require('gray-matter');
 const { BlobServiceClient } = require('@azure/storage-blob');
 const { DefaultAzureCredential } = require('@azure/identity');
+const {
+  EMBEDDING_DIMENSIONS,
+  MAX_EMBEDDING_INPUT_CHARS,
+  createAzureEmbeddingClient,
+  validVector
+} = require('../services/azure-embedding-client');
 const { topicForSlug } = require('../data/research-topics');
 const {
   headingSlug,
@@ -14,7 +20,7 @@ const {
 const SEARCH_API_VERSION = '2026-04-01';
 const SEARCH_SCOPE = 'https://search.azure.com/.default';
 const DEFAULT_SEARCH_ENDPOINT = 'https://cvkeresearch-search.search.windows.net';
-const DEFAULT_INDEX_NAME = 'research-chunks-v1';
+const DEFAULT_INDEX_NAME = 'research-chunks-v2';
 const DEFAULT_STORAGE_ACCOUNT = 'cvkeresearch';
 const DEFAULT_STORAGE_CONTAINER = 'research';
 const MAX_BLOB_BYTES = 3 * 1024 * 1024;
@@ -25,10 +31,60 @@ const INDEX_BATCH_SIZE = 500;
 const RETRYABLE_INDEX_STATUS_CODES = new Set([409, 422, 429, 503]);
 const RETRY_DELAYS_MS = [250, 500, 1000];
 
+function embeddingRepresentation(document) {
+  const prefix = [
+    `Title: ${safeMetadataText(document.articleTitle, 'Untitled', 240)}`,
+    `Heading path: ${safeMetadataText(document.headingPath, 'Overview', 480)}`,
+    `Heading: ${safeMetadataText(document.headingLabel, 'Overview', 240)}`,
+    'Content:'
+  ].join('\n');
+  const remaining = MAX_EMBEDDING_INPUT_CHARS - prefix.length - 1;
+  if (remaining < 1) throw new Error('Embedding representation exceeds the supported bound.');
+  return `${prefix}\n${String(document.content || '').replace(/\s+/g, ' ').trim().slice(0, remaining)}`;
+}
+
+function validateVectorDocuments(documents) {
+  if (!Array.isArray(documents) || documents.length < 1) {
+    throw new Error('No vector documents were produced from the research corpus.');
+  }
+  if (documents.some((document) => !validVector(document?.contentVector))) {
+    throw new Error(`Every vector document must contain exactly ${EMBEDDING_DIMENSIONS} finite dimensions.`);
+  }
+}
+
+async function embedDocuments(documents, embeddingClient, options = {}) {
+  if (!embeddingClient || typeof embeddingClient.embed !== 'function') {
+    throw new Error('A managed-identity embedding client is required.');
+  }
+  // One bounded chunk at a time keeps the minimal 1K TPM deployment below its per-request quota.
+  const batchSize = Math.min(16, Math.max(1, Number(options.batchSize) || 1));
+  const embedded = [];
+  for (let start = 0; start < documents.length; start += batchSize) {
+    const batch = documents.slice(start, start + batchSize);
+    const vectors = await embeddingClient.embed(batch.map(embeddingRepresentation), { signal: options.signal });
+    if (!Array.isArray(vectors) || vectors.length !== batch.length) {
+      throw new Error('Embedding response did not contain one vector per research chunk.');
+    }
+    batch.forEach((document, index) => embedded.push({ ...document, contentVector: vectors[index] }));
+    if (typeof options.onProgress === 'function') options.onProgress(embedded.length, documents.length);
+  }
+  validateVectorDocuments(embedded);
+  return embedded;
+}
+
 function environmentName(value, fallback, pattern, label) {
   const selected = value || fallback;
   if (!pattern.test(selected)) throw new Error(`${label} contains unsupported characters.`);
   return selected;
+}
+
+function embeddingBatchSize(value) {
+  if (value === undefined || value === null || value === '') return 1;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 16) {
+    throw new Error('AZURE_OPENAI_EMBEDDING_BATCH_SIZE must be an integer from 1 through 16.');
+  }
+  return parsed;
 }
 
 function cleanEndpoint(value) {
@@ -223,6 +279,8 @@ function indexDefinition(indexName) {
         name: 'contentVector',
         type: 'Collection(Edm.Single)',
         searchable: true,
+        // Entra-only staging verification reads this field; runtime queries explicitly exclude it.
+        retrievable: true,
         dimensions: 1536,
         vectorSearchProfile: 'research-vector-profile'
       }
@@ -308,6 +366,27 @@ async function listExistingIds(request, credential, endpoint, indexName) {
   return [...ids];
 }
 
+async function listIndexedVectors(request, credential, endpoint, indexName) {
+  const documents = [];
+  let skip = 0;
+  while (true) {
+    const page = await request(
+      credential,
+      endpoint,
+      `/indexes/${indexName}/docs/search?api-version=${SEARCH_API_VERSION}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ search: '*', select: 'id,contentVector', top: SEARCH_PAGE_SIZE, skip })
+      }
+    );
+    const values = Array.isArray(page?.value) ? page.value : [];
+    documents.push(...values);
+    if (values.length < SEARCH_PAGE_SIZE) break;
+    skip += SEARCH_PAGE_SIZE;
+  }
+  return documents;
+}
+
 function normalizeIndexResults(actions, response) {
   const results = Array.isArray(response?.value) ? response.value : [];
   const byKey = new Map();
@@ -390,6 +469,7 @@ async function applyIndexActions(actions, options) {
 async function synchronizeIndex(credential, endpoint, indexName, documents, options = {}) {
   const request = options.request || searchRequest;
   const wait = options.sleep || sleep;
+  if (options.requireVectors) validateVectorDocuments(documents);
   await request(
     credential,
     endpoint,
@@ -405,13 +485,23 @@ async function synchronizeIndex(credential, endpoint, indexName, documents, opti
   const uploads = documents.map((document) => ({ '@search.action': 'mergeOrUpload', ...document }));
   const actions = [...deletes, ...uploads];
 
-  return applyIndexActions(actions, {
+  const result = await applyIndexActions(actions, {
     credential,
     endpoint,
     indexName,
     request,
     wait
   });
+  if (options.requireVectors) {
+    const indexed = await listIndexedVectors(request, credential, endpoint, indexName);
+    validateVectorDocuments(indexed);
+    const indexedIds = new Set(indexed.map((document) => document.id));
+    const expectedIds = new Set(documents.map((document) => document.id));
+    if (indexedIds.size !== indexed.length || indexedIds.size !== expectedIds.size || [...expectedIds].some((id) => !indexedIds.has(id))) {
+      throw new Error('Post-index vector verification did not find every expected document exactly once.');
+    }
+  }
+  return result;
 }
 
 async function main() {
@@ -439,7 +529,15 @@ async function main() {
   const containerClient = blobService.getContainerClient(containerName);
 
   const loaded = await loadBlobDocuments(containerClient);
-  const synchronized = await synchronizeIndex(credential, endpoint, indexName, loaded.documents);
+  console.log(`Prepared ${loaded.documents.length} chunks from ${loaded.blobCount} Markdown blobs for v2 embedding.`);
+  const embeddingClient = createAzureEmbeddingClient({ env: process.env, credential });
+  const documents = await embedDocuments(loaded.documents, embeddingClient, {
+    batchSize: embeddingBatchSize(process.env.AZURE_OPENAI_EMBEDDING_BATCH_SIZE),
+    onProgress(completed, total) {
+      console.log(`Embedded ${completed}/${total} chunks.`);
+    }
+  });
+  const synchronized = await synchronizeIndex(credential, endpoint, indexName, documents, { requireVectors: true });
   console.log(
     `Indexed ${synchronized.uploaded} chunks from ${loaded.blobCount} Markdown blobs; `
     + `removed ${synchronized.deleted} stale chunks from ${indexName}.`
@@ -447,21 +545,29 @@ async function main() {
 }
 
 if (require.main === module) {
+  // Azure Identity's HTTP work can be unreferenced while an awaited promise is pending.
+  // Keep this CLI process alive until the all-or-nothing embedding/indexing workflow settles.
+  const keepAlive = setInterval(() => {}, 1000);
   main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
-  });
+  }).finally(() => clearInterval(keepAlive));
 }
 
 module.exports = {
   applyIndexActions,
   buildDocuments,
+  embeddingBatchSize,
+  embedDocuments,
+  embeddingRepresentation,
   indexDefinition,
   listExistingIds,
+  listIndexedVectors,
   markdownSections,
   normalizeIndexResults,
   preferredChunkBoundary,
   sectionChunks,
   submitIndexBatch,
-  synchronizeIndex
+  synchronizeIndex,
+  validateVectorDocuments
 };

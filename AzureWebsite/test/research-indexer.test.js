@@ -3,8 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  embedDocuments,
+  embeddingBatchSize,
+  embeddingRepresentation,
   sectionChunks,
-  synchronizeIndex
+  synchronizeIndex,
+  validateVectorDocuments
 } = require('../scripts/index-research');
 
 const ENDPOINT = 'https://example.search.windows.net';
@@ -31,6 +35,67 @@ test('sectionChunks bounds oversized paragraphs and preserves bounded overlap', 
   chunks.forEach((chunk) => assert.ok(chunk.length <= 2600));
   assert.equal(chunks[0].slice(-320), chunks[1].slice(0, 320));
   assert.deepEqual(chunks.map((chunk) => chunk.length), [2600, 2600, 440]);
+});
+
+test('embedding representation is deterministic and indexing requires exact finite vectors', async () => {
+  const document = {
+    id: 'one', articleTitle: 'An article', headingPath: 'Overview > Result', headingLabel: 'Result', content: 'Evidence text.'
+  };
+  assert.equal(embeddingRepresentation(document), embeddingRepresentation(document));
+  const vector = Array.from({ length: 1536 }, () => 0.1);
+  const embedded = await embedDocuments([document], { async embed(inputs) {
+    assert.match(inputs[0], /^Title: An article\nHeading path: Overview > Result\nHeading: Result\nContent:/);
+    return [vector];
+  } });
+  assert.deepEqual(embedded[0].contentVector, vector);
+  assert.throws(() => validateVectorDocuments([{ ...document, contentVector: [NaN] }]), /exactly 1536 finite/);
+});
+
+test('indexing batch size is bounded for the embedding deployment', () => {
+  assert.equal(embeddingBatchSize(), 1);
+  assert.equal(embeddingBatchSize('8'), 8);
+  assert.throws(() => embeddingBatchSize('17'), /AZURE_OPENAI_EMBEDDING_BATCH_SIZE/);
+});
+
+test('vector-required synchronization rejects incomplete documents before any Azure mutation', async () => {
+  let calls = 0;
+  await assert.rejects(
+    synchronizeIndex({}, ENDPOINT, INDEX_NAME, [{ id: 'missing-vector' }], { requireVectors: true, request: async () => { calls += 1; } }),
+    /exactly 1536 finite/
+  );
+  assert.equal(calls, 0);
+});
+
+test('vector-required synchronization verifies each stored vector after upload', async () => {
+  const vector = Array.from({ length: 1536 }, () => 0.2);
+  let indexed = false;
+  const request = async (_credential, _endpoint, path, options) => {
+    if (!path.includes('/docs/')) return {};
+    if (path.includes('/docs/search')) {
+      return indexed ? { value: [{ id: 'one', contentVector: vector }] } : { value: [] };
+    }
+    indexed = true;
+    return successfulResults(requestBody(options).value);
+  };
+  const result = await synchronizeIndex({}, ENDPOINT, INDEX_NAME, [{ id: 'one', contentVector: vector }], {
+    requireVectors: true, request, sleep: async () => {}
+  });
+  assert.deepEqual(result, { deleted: 0, uploaded: 1 });
+
+  indexed = false;
+  await assert.rejects(
+    synchronizeIndex({}, ENDPOINT, INDEX_NAME, [{ id: 'one', contentVector: vector }], {
+      requireVectors: true,
+      request: async (_credential, _endpoint, path, options) => {
+        if (!path.includes('/docs/')) return {};
+        if (path.includes('/docs/search')) return indexed ? { value: [{ id: 'one', contentVector: [0] }] } : { value: [] };
+        indexed = true;
+        return successfulResults(requestBody(options).value);
+      },
+      sleep: async () => {}
+    }),
+    /exactly 1536 finite/
+  );
 });
 
 test('sectionChunks prefers paragraph boundaries in the final forty percent', () => {

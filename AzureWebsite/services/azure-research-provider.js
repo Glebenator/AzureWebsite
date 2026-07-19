@@ -1,6 +1,10 @@
 'use strict';
 
 const { DefaultAzureCredential } = require('@azure/identity');
+const {
+  AzureEmbeddingError,
+  createAzureEmbeddingClient
+} = require('./azure-embedding-client');
 
 const SEARCH_SCOPE = 'https://search.azure.com/.default';
 const MODEL_SCOPE = 'https://cognitiveservices.azure.com/.default';
@@ -13,6 +17,8 @@ const MAX_EVIDENCE_CONTENT = 6000;
 const MAX_CLAIM_LENGTH = 1200;
 const MAX_ANSWER_LENGTH = 6000;
 const DEFAULT_GUARDRAIL_MODE = 'standard';
+const DEFAULT_RETRIEVAL_MODE = 'keyword';
+const RETRIEVAL_MODES = new Set([DEFAULT_RETRIEVAL_MODE, 'hybrid']);
 const GUARDRAIL_MODES = new Set([DEFAULT_GUARDRAIL_MODE, 'experimental']);
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -110,6 +116,21 @@ function guardrailMode(value) {
     );
   }
   return normalized;
+}
+
+function retrievalMode(value) {
+  const normalized = value === undefined || value === null || value === ''
+    ? DEFAULT_RETRIEVAL_MODE
+    : String(value).trim().toLowerCase();
+  if (!RETRIEVAL_MODES.has(normalized)) {
+    throw new AzureResearchProviderConfigurationError('RESEARCH_RETRIEVAL_MODE must be either keyword or hybrid.');
+  }
+  return normalized;
+}
+
+function observe(request, detail) {
+  if (typeof request?.observe !== 'function') return;
+  try { request.observe(detail); } catch { /* telemetry must not affect retrieval */ }
 }
 
 function enabledState(value) {
@@ -521,6 +542,7 @@ function createAzureResearchProvider(options = {}) {
   );
   const searchIndex = configuredName(environment.AZURE_SEARCH_INDEX, 'AZURE_SEARCH_INDEX');
   const deployment = configuredName(environment.AZURE_OPENAI_DEPLOYMENT, 'AZURE_OPENAI_DEPLOYMENT');
+  const selectedRetrievalMode = retrievalMode(environment.RESEARCH_RETRIEVAL_MODE);
   const credential = options.credential || new DefaultAzureCredential({
     excludeInteractiveBrowserCredential: true
   });
@@ -531,6 +553,15 @@ function createAzureResearchProvider(options = {}) {
   const sleep = options.sleep || wait;
   const searchTimeoutMs = boundedTimeout(options.searchTimeoutMs, DEFAULT_SEARCH_TIMEOUT_MS);
   const generationTimeoutMs = boundedTimeout(options.generationTimeoutMs, DEFAULT_GENERATION_TIMEOUT_MS);
+  const embeddingClient = selectedRetrievalMode === 'hybrid'
+    ? (options.embeddingClient || createAzureEmbeddingClient({
+      env: environment,
+      credential,
+      fetch: fetchImplementation,
+      sleep,
+      timeoutMs: options.embeddingTimeoutMs
+    }))
+    : null;
 
   return {
     async retrieve(request) {
@@ -545,6 +576,31 @@ function createAzureResearchProvider(options = {}) {
       if (normalized.scope === 'article') {
         body.filter = `articleSlug eq '${odataString(normalized.slug)}'`;
       }
+
+      let actualRetrievalMode = DEFAULT_RETRIEVAL_MODE;
+      if (selectedRetrievalMode === 'hybrid') {
+        try {
+          const [vector] = await embeddingClient.embed([normalized.question], { signal: normalized.signal });
+          body.vectorQueries = [{
+            kind: 'vector',
+            vector,
+            fields: 'contentVector',
+            k: Math.min(50, Math.max(20, normalized.limit * 4))
+          }];
+          body.vectorFilterMode = normalized.scope === 'article' ? 'preFilter' : 'postFilter';
+          actualRetrievalMode = 'hybrid';
+        } catch (error) {
+          if (error instanceof AzureEmbeddingError && error.code === 'embedding_cancelled') throw error;
+          if (!(error instanceof AzureEmbeddingError)) throw error;
+          // Preserve the read-only viewer when embeddings are temporarily unavailable. No request content is logged.
+          actualRetrievalMode = 'keyword_fallback';
+        }
+      }
+      observe(request, {
+        stage: 'retrieval_mode',
+        mode: actualRetrievalMode,
+        ...(actualRetrievalMode === 'keyword_fallback' ? { category: 'embedding_unavailable' } : {})
+      });
 
       let response;
       for (let attempt = 0; attempt <= SEARCH_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -643,6 +699,7 @@ module.exports = {
   MODEL_SCOPE,
   SEARCH_SCOPE,
   DEFAULT_GUARDRAIL_MODE,
+  DEFAULT_RETRIEVAL_MODE,
   createAzureResearchProvider,
   containsUnsafeHealthOutput,
   parseGeneratedResponse

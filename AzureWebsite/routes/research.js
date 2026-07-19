@@ -272,7 +272,13 @@ function logAssistantRequest(detail) {
     canonicalCount: safeCount(detail.canonicalCount),
     sourceCount: safeCount(detail.sourceCount),
     retrievalDurationMs: safeCount(detail.retrievalDurationMs),
-    generationDurationMs: safeCount(detail.generationDurationMs)
+    generationDurationMs: safeCount(detail.generationDurationMs),
+    retrievalMode: ['keyword', 'hybrid', 'keyword_fallback'].includes(detail.retrievalMode)
+      ? detail.retrievalMode
+      : undefined,
+    retrievalFallbackCategory: detail.retrievalFallbackCategory === 'embedding_unavailable'
+      ? detail.retrievalFallbackCategory
+      : undefined
   };
   console.info(JSON.stringify(event));
 }
@@ -442,6 +448,11 @@ function createResearchRouter(repository, assistant, options = {}) {
             telemetry.canonicalCount = safeCount(detail.count);
           } else if (detail.stage === 'generation') {
             telemetry.generationDurationMs = safeCount(detail.durationMs);
+          } else if (detail.stage === 'retrieval_mode') {
+            telemetry.retrievalMode = detail.mode;
+            if (detail.mode === 'keyword_fallback') {
+              telemetry.retrievalFallbackCategory = detail.category;
+            }
           } else if (detail.stage === 'result') {
             telemetry.sourceCount = safeCount(detail.sourceCount);
           }
