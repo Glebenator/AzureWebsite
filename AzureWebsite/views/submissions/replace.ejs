@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/submissions.css">
+  </head>
+  <body class="submission-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <div class="submission-header-actions">
+        <nav class="primary-nav submission-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/research">Research</a>
+          <a class="nav-link is-active" href="/research/submissions" aria-current="page">My submissions</a>
+          <% if (isAdmin) { %><a class="nav-link" href="/admin/submissions">Admin</a><% } %>
+        </nav>
+        <form class="submission-logout" action="/auth/logout" method="post">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+    <main id="main-content" class="submission-main">
+      <nav class="submission-breadcrumb" aria-label="Breadcrumb">
+        <a href="/research/submissions/<%= submission.id %>"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Current submission</span></a>
+      </nav>
+
+      <header class="submission-page-header">
+        <p class="submission-kicker">Replace pending file</p>
+        <h1><%= submission.title %></h1>
+        <p>The replacement is validated from its bytes and receives a new sanitized preview. Replacing restarts administrator review.</p>
+      </header>
+
+      <% if (flash) { %><p class="submission-notice" role="status"><%= flash %></p><% } %>
+      <% if (error) { %><p class="submission-notice is-error" role="alert"><%= error %></p><% } %>
+
+      <div class="submission-form-layout">
+        <form class="submission-form" action="/research/submissions/<%= submission.id %>/replace" method="post" enctype="multipart/form-data">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <div class="submission-field">
+            <label for="replacement-file">New Markdown file</label>
+            <input id="replacement-file" name="researchFile" type="file" accept=".md,text/markdown" required aria-describedby="replacement-requirements">
+            <p id="replacement-requirements">Only UTF-8 <code>.md</code>, up to 3 MiB. Upload and account quotas still apply.</p>
+          </div>
+          <button class="submission-button" type="submit">Validate and replace</button>
+        </form>
+
+        <aside class="submission-guidance" aria-labelledby="replacement-impact-title">
+          <h2 id="replacement-impact-title">Replacement effect</h2>
+          <p>The previous pending file is superseded. It will not remain searchable, and neither version is available to the assistant.</p>
+        </aside>
+      </div>
+
+      <section class="submission-review submission-current-preview" aria-labelledby="current-preview-title">
+        <div class="submission-preview-heading">
+          <div><p class="submission-kicker">Current sanitized preview</p><h2 id="current-preview-title">Before replacement</h2></div>
+        </div>
+        <div class="submission-preview research-prose"><%- submission.previewHtml %></div>
+      </section>
+    </main>
+  </body>
+</html>

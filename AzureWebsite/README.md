@@ -106,3 +106,34 @@ npm run check
 ```
 
 The tests are offline and inject credentials and HTTP clients. They cover research viewing, XSS sanitization, Search scoping, strict model output, citation validation, stale/cross-article evidence, provider failures, rate/cost guards, frontend timeouts, accessibility, and safe error rendering.
+
+## User research submissions (local MVP)
+
+The app now contains a feature-gated Google-only submission workflow. It is disabled unless `RESEARCH_SUBMISSIONS_ENABLED=true`. When enabled, authenticated users can upload one UTF-8 `.md` file, inspect the same sanitized renderer used by the public library, submit it for review, and see only their own records. The sole administrator is matched only by the immutable Google `sub` configured in `ADMIN_GOOGLE_SUB`.
+
+Pending content is stored in the private submission repository and is never passed to the public Blob adapter, Search adapter, research repository, or assistant. The publication coordinator is the only promotion boundary: it reserves a stable slug, writes whitelisted/normalized Markdown with an idempotent conditional Blob operation, indexes and verifies the resulting chunks, and only then marks the record `published`. A failed operation removes Search chunks before removing the public copy. Incomplete compensation remains `publishing` and cannot be claimed as safely failed or deleted.
+
+### Required configuration
+
+Use App Service configuration or a private local environment; never commit values. The required setting names are listed below.
+
+- `RESEARCH_SUBMISSIONS_ENABLED=true` enables routes and the archive call to action.
+- `GOOGLE_OIDC_CLIENT_ID`, `GOOGLE_OIDC_CLIENT_SECRET`, and `GOOGLE_OIDC_REDIRECT_URI` configure an authorization-code Google OIDC client. Production redirect URIs must use HTTPS.
+- `ADMIN_GOOGLE_SUB` is the one administrator's immutable Google subject, not an email or display name.
+- `SUBMISSION_DATA_FILE` is an absolute path on the App Service private persistent data mount. The repository writes with directory mode `0700`, file mode `0600`, and atomic replacement.
+- `SUBMISSION_PUBLISHING_ENABLED=true` enables the managed-identity public Blob and Search adapters. Leave it false until Azure permissions and all existing embedding/Search settings are ready.
+- `SUBMISSION_ACCOUNT_DAILY_LIMIT`, `SUBMISSION_IP_DAILY_LIMIT`, `SUBMISSION_SESSION_TTL_MS`, and `SUBMISSION_MAX_SESSIONS` are optional and strictly bounded.
+
+Publishing uses the existing `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_CONTAINER`, `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` settings. It rejects API keys, SAS tokens, and storage connection strings. The App Service managed identity needs the least-privilege data-plane roles required to write/delete reviewed public blobs, write/delete Search documents, and call the embedding deployment. Those role changes are not part of this local implementation and must be reviewed before deployment.
+
+### Security, deletion, and retention
+
+- Sessions are opaque, server-side, bounded, rotated after login, expire after eight hours by default, and use `HttpOnly`, `SameSite=Lax`, production-`Secure` cookies. Login attempts expire after ten minutes and bind state, nonce, and S256 PKCE through `openid-client`.
+- Every state-changing browser form requires a session-bound CSRF token and a same-origin `Origin` or `Referer`. Production submission routes reject a non-HTTPS request behind the trusted App Service proxy.
+- Upload parsing permits one file and one CSRF field, enforces 3 MiB while streaming, then validates the actual bytes as fatal UTF-8 text with no NUL/binary controls and bounded front matter. Original filenames are never persisted.
+- The in-process account/IP quota defaults to 5/20 upload attempts per 24 hours. Sessions and quotas assume the current single App Service instance; replace them with a shared store before horizontal scaling.
+- Pending records remain private until submitted, replaced, or deleted. Rejected and failed records remain private until the administrator deletes them. Published records remain until an administrator deletes them; that operation removes Search chunks first and the public Blob second.
+- Deletion retains only an opaque tombstone needed for state/slug safety. It scrubs the owner identifier, Markdown, parsed metadata, and rejection reason. Deleted records are excluded from normal owner/admin lists.
+- The file repository is the smallest durable single-instance MVP abstraction. Before multi-instance or higher-volume use, replace it behind the existing repository interface with a concurrency-safe private store; do not use the failed/unused Cosmos account by default.
+
+No Azure resources are provisioned or mutated merely by installing or testing this code. All tests use injected repositories and fake publication adapters.

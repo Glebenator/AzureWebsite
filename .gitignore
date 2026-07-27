@@ -37,6 +37,7 @@ yarn-debug.log*
 # Runtime data
 .cache/
 .parcel-cache/
+.data/
 
 # OS
 Thumbs.db

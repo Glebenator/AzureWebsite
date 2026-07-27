@@ -1,0 +1,91 @@
+<%
+  var statusLabels = {
+    pending: 'Pending',
+    ready_for_review: 'Ready for review',
+    publishing: 'Publishing',
+    published: 'Published',
+    rejected: 'Rejected',
+    failed: 'Failed',
+    deleted: 'Deleted'
+  };
+  function displayDate(value) {
+    if (!value) return 'Date unavailable';
+    var date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(date);
+  }
+%>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/submissions.css">
+  </head>
+  <body class="submission-page submission-admin-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <div class="submission-header-actions">
+        <nav class="primary-nav submission-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/research">Research</a>
+          <a class="nav-link" href="/research/submissions">My submissions</a>
+          <a class="nav-link is-active" href="/admin/submissions" aria-current="page">Admin</a>
+        </nav>
+        <form class="submission-logout" action="/auth/logout" method="post">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+    <main id="main-content" class="submission-main">
+      <header class="submission-page-header submission-page-header-split">
+        <div>
+          <p class="submission-kicker">Sole-admin review</p>
+          <h1>Submission queue</h1>
+          <p>Inspect the sanitized preview before publishing, rejecting, or deleting any submission.</p>
+        </div>
+        <span class="submission-private-marker"><i class="ph ph-shield-check" aria-hidden="true"></i>Admin only</span>
+      </header>
+
+      <% if (flash) { %><p class="submission-notice" role="status"><%= flash %></p><% } %>
+      <% if (error) { %><p class="submission-notice is-error" role="alert"><%= error %></p><% } %>
+
+      <% if (!submissions || submissions.length === 0) { %>
+        <section class="submission-empty" aria-labelledby="empty-title">
+          <i class="ph ph-tray" aria-hidden="true"></i>
+          <h2 id="empty-title">The queue is empty.</h2>
+          <p>New user submissions will appear here after their private preview is confirmed.</p>
+        </section>
+      <% } else { %>
+        <div class="submission-table-wrap">
+          <table class="submission-table">
+            <caption class="visually-hidden">Research submissions awaiting or completing administration</caption>
+            <thead><tr><th scope="col">Submission</th><th scope="col">Owner</th><th scope="col">Status</th><th scope="col">Updated</th><th scope="col"><span class="visually-hidden">Action</span></th></tr></thead>
+            <tbody>
+              <% submissions.forEach(function(submission) { %>
+                <tr>
+                  <th scope="row"><a href="/admin/submissions/<%= submission.id %>"><%= submission.title %></a></th>
+                  <td class="submission-owner"><%= submission.ownerLabel %></td>
+                  <td><span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span></td>
+                  <td><time datetime="<%= submission.updatedAt %>"><%= displayDate(submission.updatedAt) %></time></td>
+                  <td><a class="text-link" href="/admin/submissions/<%= submission.id %>">Review</a></td>
+                </tr>
+              <% }); %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
+    </main>
+  </body>
+</html>

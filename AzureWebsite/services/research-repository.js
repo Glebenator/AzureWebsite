@@ -535,10 +535,11 @@ function createResearchRepository(options = {}) {
   const renderMarkdown = options.renderMarkdown || createMarkdownRenderer();
   let catalog = null;
   let refreshPromise = null;
+  let cacheGeneration = 0;
   const articleCache = new Map();
 
-  async function downloadAndParse(entry, freshlyEnumerated = false) {
-    const cached = articleCache.get(entry.blobName);
+  async function downloadAndParse(entry, freshlyEnumerated = false, generation = cacheGeneration) {
+    const cached = generation === cacheGeneration ? articleCache.get(entry.blobName) : null;
     const cacheIdentityMatches = cached && cached.etag === entry.etag;
     const cacheIsCurrent = cacheIdentityMatches && cached.expiresAt > now();
     const cacheWasRevalidated = cacheIdentityMatches && freshlyEnumerated && Boolean(entry.etag);
@@ -571,15 +572,17 @@ function createResearchRepository(options = {}) {
       toc: renderResult.toc
     };
 
-    articleCache.set(entry.blobName, {
-      article,
-      etag: entry.etag,
-      expiresAt: now() + cacheTtlMs
-    });
+    if (generation === cacheGeneration) {
+      articleCache.set(entry.blobName, {
+        article,
+        etag: entry.etag,
+        expiresAt: now() + cacheTtlMs
+      });
+    }
     return article;
   }
 
-  async function refreshCatalog() {
+  async function refreshCatalog(generation) {
     try {
       const entries = [];
       for await (const blob of containerClient.listBlobsFlat()) {
@@ -602,36 +605,47 @@ function createResearchRepository(options = {}) {
         currentBlobNames.add(entry.blobName);
       }
 
-      for (const blobName of articleCache.keys()) {
-        if (!currentBlobNames.has(blobName)) articleCache.delete(blobName);
+      if (generation === cacheGeneration) {
+        for (const blobName of articleCache.keys()) {
+          if (!currentBlobNames.has(blobName)) articleCache.delete(blobName);
+        }
       }
 
-      const articles = await mapWithConcurrency(entries, 4, (entry) => downloadAndParse(entry, true));
+      const articles = await mapWithConcurrency(
+        entries,
+        4,
+        (entry) => downloadAndParse(entry, true, generation)
+      );
       articles.sort((left, right) => {
         const leftDate = left.modifiedAt || left.createdAt || '';
         const rightDate = right.modifiedAt || right.createdAt || '';
         return rightDate.localeCompare(leftDate) || left.title.localeCompare(right.title);
       });
 
-      catalog = {
+      const refreshed = {
         bySlug,
         expiresAt: now() + cacheTtlMs,
         items: articles.map(({ citationCount, html, sourceUrl, toc, ...summary }) => summary)
       };
-      return catalog;
+      if (generation === cacheGeneration) catalog = refreshed;
+      return refreshed;
     } catch (error) {
       throw new ResearchStorageError('The research library could not be loaded.', { cause: error });
     }
   }
 
   async function getCatalog() {
+    const generation = cacheGeneration;
     if (catalog && catalog.expiresAt > now()) return catalog;
-    if (!refreshPromise) {
-      refreshPromise = refreshCatalog().finally(() => {
-        refreshPromise = null;
+    if (!refreshPromise || refreshPromise.generation !== generation) {
+      const promise = refreshCatalog(generation).finally(() => {
+        if (refreshPromise?.promise === promise) refreshPromise = null;
       });
+      refreshPromise = { generation, promise };
     }
-    return refreshPromise;
+    const refreshed = await refreshPromise.promise;
+    if (generation !== cacheGeneration) return getCatalog();
+    return refreshed;
   }
 
   return {
@@ -645,8 +659,9 @@ function createResearchRepository(options = {}) {
       const currentCatalog = await getCatalog();
       const entry = currentCatalog.bySlug.get(slug);
       if (!entry) return null;
+      const generation = cacheGeneration;
       try {
-        return await downloadAndParse(entry);
+        return await downloadAndParse(entry, false, generation);
       } catch (error) {
         if (error instanceof ResearchStorageError) throw error;
         throw new ResearchStorageError('The research article could not be loaded.', { cause: error });
@@ -666,9 +681,10 @@ function createResearchRepository(options = {}) {
       const currentCatalog = await getCatalog();
       const entry = currentCatalog.bySlug.get(articleSlug);
       if (!entry || !entry.etag || entry.etag !== sourceEtag) return null;
+      const generation = cacheGeneration;
 
       try {
-        const article = await downloadAndParse(entry);
+        const article = await downloadAndParse(entry, false, generation);
         const heading = article.toc.find((item) => item.id === headingId);
         if (!heading) return null;
         return {
@@ -687,6 +703,7 @@ function createResearchRepository(options = {}) {
     },
 
     clearCache() {
+      cacheGeneration += 1;
       catalog = null;
       articleCache.clear();
     }

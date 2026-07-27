@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/submissions.css">
+  </head>
+  <body class="submission-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <nav class="primary-nav submission-nav" aria-label="Primary navigation">
+        <a class="nav-link" href="/">Home</a>
+        <a class="nav-link" href="/research">Research</a>
+      </nav>
+    </header>
+
+    <main id="main-content" class="submission-main submission-auth-main">
+      <section class="submission-auth" aria-labelledby="sign-in-title">
+        <p class="submission-kicker">Research submissions</p>
+        <h1 id="sign-in-title">Sign in to submit research.</h1>
+        <p class="submission-lede">A Google account establishes ownership and helps limit automated uploads. Your submission stays private until the administrator reviews and publishes it.</p>
+
+        <% if (flash) { %>
+          <p class="submission-notice" role="status"><%= flash %></p>
+        <% } %>
+        <% if (error) { %>
+          <p class="submission-notice is-error" role="alert"><%= error %></p>
+        <% } %>
+
+        <a class="submission-button" href="/auth/google">
+          <span>Continue with Google</span>
+          <i class="ph ph-arrow-right" aria-hidden="true"></i>
+        </a>
+
+        <div class="submission-auth-notes" aria-label="What to expect">
+          <p><strong>Minimal account.</strong> No public profile, avatar, or email display.</p>
+          <p><strong>Private review.</strong> Pending files cannot appear in search or assistant answers.</p>
+        </div>
+        <a class="text-link" href="/research"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to the research archive</span></a>
+      </section>
+    </main>
+  </body>
+</html>

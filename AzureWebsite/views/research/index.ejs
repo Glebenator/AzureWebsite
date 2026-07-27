@@ -33,6 +33,9 @@
           <i class="ph ph-info" aria-hidden="true"></i>
           <p>Research, not medical advice. Health decisions belong with a qualified clinician who knows your circumstances.</p>
         </aside>
+        <% if (submissionsEnabled) { %>
+          <p class="research-submit-action"><a class="text-link" href="/research/submissions">Submit research <i class="ph ph-arrow-right" aria-hidden="true"></i></a></p>
+        <% } %>
       </header>
 
       <%- include('_assistant', { assistant }) %>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/submissions.css">
+  </head>
+  <body class="submission-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <div class="submission-header-actions">
+        <nav class="primary-nav submission-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/research">Research</a>
+          <a class="nav-link" href="/research/submissions">My submissions</a>
+          <% if (isAdmin) { %><a class="nav-link" href="/admin/submissions">Admin</a><% } %>
+        </nav>
+        <form class="submission-logout" action="/auth/logout" method="post">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+    <main id="main-content" class="submission-main">
+      <nav class="submission-breadcrumb" aria-label="Breadcrumb">
+        <a href="/research/submissions"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>My submissions</span></a>
+      </nav>
+
+      <header class="submission-page-header">
+        <p class="submission-kicker">Step 1 of 2</p>
+        <h1>Upload one Markdown file.</h1>
+        <p>We will validate the file and show a sanitized preview before anything is submitted for review.</p>
+      </header>
+
+      <% if (flash) { %><p class="submission-notice" role="status"><%= flash %></p><% } %>
+      <% if (error) { %><p class="submission-notice is-error" role="alert"><%= error %></p><% } %>
+
+      <div class="submission-form-layout">
+        <form class="submission-form" action="/research/submissions/preview" method="post" enctype="multipart/form-data">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <div class="submission-field">
+            <label for="research-file">Markdown file</label>
+            <input id="research-file" name="researchFile" type="file" accept=".md,text/markdown" required aria-describedby="file-requirements">
+            <p id="file-requirements">Only a UTF-8 <code>.md</code> file, up to 3 MiB. The server checks the actual bytes, not only the filename.</p>
+          </div>
+          <button class="submission-button" type="submit">
+            <span>Review sanitized preview</span>
+            <i class="ph ph-arrow-right" aria-hidden="true"></i>
+          </button>
+        </form>
+
+        <aside class="submission-guidance" aria-labelledby="upload-guidance-title">
+          <h2 id="upload-guidance-title">Before uploading</h2>
+          <ul>
+            <li>Use a clear first-level heading for the research title.</li>
+            <li>Do not include secrets, private personal data, or raw HTML.</li>
+            <li>Uploads are subject to per-account and per-IP limits.</li>
+            <li>Pending work stays outside the public archive and assistant retrieval.</li>
+          </ul>
+        </aside>
+      </div>
+    </main>
+  </body>
+</html>

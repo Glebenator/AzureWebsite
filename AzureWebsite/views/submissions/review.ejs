@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/images/favicon-32x32.png" sizes="32x32">
+    <link rel="apple-touch-icon" href="/images/favicon-180x180.png" sizes="180x180">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/submissions.css">
+  </head>
+  <body class="submission-page">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="wordmark" href="/">Gleb Gladyshevskiy</a>
+      <div class="submission-header-actions">
+        <nav class="primary-nav submission-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="/research">Research</a>
+          <a class="nav-link" href="/research/submissions">My submissions</a>
+          <% if (isAdmin) { %><a class="nav-link" href="/admin/submissions">Admin</a><% } %>
+        </nav>
+        <form class="submission-logout" action="/auth/logout" method="post">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <button type="submit">Sign out</button>
+        </form>
+      </div>
+    </header>
+
+    <main id="main-content" class="submission-main">
+      <nav class="submission-breadcrumb" aria-label="Breadcrumb">
+        <a href="/research/submissions/new"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Choose another file</span></a>
+      </nav>
+
+      <header class="submission-page-header">
+        <p class="submission-kicker">Step 2 of 2</p>
+        <h1>Review before submitting.</h1>
+        <p>This is the sanitized preview the administrator will see. Confirm the title and rendered content before sending it for review.</p>
+      </header>
+
+      <% if (flash) { %><p class="submission-notice" role="status"><%= flash %></p><% } %>
+      <% if (error) { %><p class="submission-notice is-error" role="alert"><%= error %></p><% } %>
+
+      <section class="submission-review" aria-labelledby="preview-title">
+        <div class="submission-preview-heading">
+          <div>
+            <p class="submission-kicker">Sanitized preview</p>
+            <h2 id="preview-title"><%= submission.title %></h2>
+          </div>
+          <span class="submission-private-marker"><i class="ph ph-lock" aria-hidden="true"></i>Private</span>
+        </div>
+        <div class="submission-preview research-prose"><%- submission.previewHtml %></div>
+      </section>
+
+      <div class="submission-confirmation">
+        <p><strong>Submission boundary:</strong> this action sends the private draft to the sole administrator. It does not publish or index the file.</p>
+        <form action="/research/submissions" method="post">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+          <input type="hidden" name="draftId" value="<%= submission.id %>">
+          <button class="submission-button" type="submit">
+            <span>Submit for review</span>
+            <i class="ph ph-arrow-right" aria-hidden="true"></i>
+          </button>
+        </form>
+      </div>
+    </main>
+  </body>
+</html>

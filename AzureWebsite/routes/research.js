@@ -311,6 +311,7 @@ function createResearchRouter(repository, assistant, options = {}) {
         sortOptions: Object.entries(SORT_OPTIONS).map(([value, label]) => ({ value, label })),
         topics: availableTopicKeys.map((key) => ({ key, label: TOPIC_LABELS[key] })),
         totalArticles: catalog.length,
+        submissionsEnabled: Boolean(options.submissionsEnabled),
         assistant: assistantViewModel(assistant, 'library'),
         articles: articles.map((article) => ({
           ...article,
