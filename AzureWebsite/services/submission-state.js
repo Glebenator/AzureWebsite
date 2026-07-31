@@ -12,11 +12,11 @@ const SUBMISSION_STATES = Object.freeze([
 
 const TRANSITIONS = new Map([
   ['pending', new Set(['ready_for_review', 'deleted'])],
-  ['ready_for_review', new Set(['publishing', 'rejected', 'deleted'])],
+  ['ready_for_review', new Set(['pending', 'publishing', 'rejected', 'deleted'])],
   ['publishing', new Set(['published', 'failed'])],
   ['published', new Set(['deleted'])],
-  ['rejected', new Set(['deleted'])],
-  ['failed', new Set(['publishing', 'rejected', 'deleted'])],
+  ['rejected', new Set(['pending', 'deleted'])],
+  ['failed', new Set(['pending', 'publishing', 'rejected', 'deleted'])],
   ['deleted', new Set()]
 ]);
 

@@ -13,7 +13,8 @@
     var date = new Date(value);
     return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
-  var canChange = submission.status === 'pending';
+  var canEdit = ['pending', 'ready_for_review', 'rejected', 'failed'].includes(submission.status);
+  var canDelete = ['pending', 'ready_for_review', 'published', 'rejected', 'failed'].includes(submission.status);
 %>
 <!doctype html>
 <html lang="en">
@@ -88,11 +89,14 @@
         </section>
       <% } %>
 
-      <% if (canChange) { %>
+      <% if (canEdit || canDelete) { %>
         <section class="submission-actions" aria-labelledby="submission-actions-title">
           <div>
             <h2 id="submission-actions-title">Manage submission</h2>
-            <p>Replacing the file restarts review. Deleting removes the private submission and cannot be undone.</p>
+            <p>
+              <% if (canEdit) { %>Saving changes returns this submission to draft status so you can review it again.<% } %>
+              <% if (submission.status === 'published') { %>Deleting also removes the public note and search entry.<% } else { %>Deleting removes the stored Markdown and cannot be undone.<% } %>
+            </p>
           </div>
           <div class="submission-action-group">
             <% if (submission.status === 'pending') { %>
@@ -101,11 +105,22 @@
                 <button class="submission-button" type="submit">Submit for review</button>
               </form>
             <% } %>
-            <a class="submission-button is-secondary" href="/research/submissions/<%= submission.id %>/replace">Replace file</a>
-            <form action="/research/submissions/<%= submission.id %>/delete" method="post">
-              <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-              <button class="submission-button is-danger" type="submit">Delete submission</button>
-            </form>
+            <% if (canEdit) { %>
+              <a class="submission-button is-secondary" href="/research/submissions/<%= submission.id %>/edit">Edit Markdown</a>
+              <a class="submission-button is-secondary" href="/research/submissions/<%= submission.id %>/replace">Replace file</a>
+            <% } %>
+            <% if (canDelete) { %>
+              <details class="submission-delete-control">
+                <summary class="submission-button is-danger"><%= submission.status === 'published' ? 'Delete and unpublish' : 'Delete submission' %></summary>
+                <div class="submission-delete-confirmation">
+                  <p>This action is permanent. Confirm only if you want to remove this submission.</p>
+                  <form action="/research/submissions/<%= submission.id %>/delete" method="post">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                    <button class="submission-button is-danger" type="submit">Confirm deletion</button>
+                  </form>
+                </div>
+              </details>
+            <% } %>
           </div>
         </section>
       <% } %>

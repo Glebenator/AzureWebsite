@@ -23,13 +23,15 @@ function input(ownerId = 'account-one', title = 'Research title') {
 test('state machine exposes only the reviewed publication path', () => {
   assert.equal(canTransition('pending', 'ready_for_review'), true);
   assert.equal(canTransition('pending', 'publishing'), false);
+  assert.equal(canTransition('ready_for_review', 'pending'), true);
   assert.equal(canTransition('ready_for_review', 'publishing'), true);
   assert.equal(canTransition('publishing', 'published'), true);
+  assert.equal(canTransition('rejected', 'pending'), true);
   assert.equal(canTransition('failed', 'publishing'), true);
   assert.equal(canTransition('published', 'pending'), false);
 });
 
-test('repository generates opaque IDs, isolates owner lists, and permits replacement only while pending', async () => {
+test('repository generates opaque IDs, isolates owners, and safely returns revisions to draft', async () => {
   const repository = createInMemorySubmissionRepository();
   const first = await repository.create(input('owner-a'));
   const second = await repository.create(input('owner-b'));
@@ -43,6 +45,12 @@ test('repository generates opaque IDs, isolates owner lists, and permits replace
   assert.equal(replaced.metadata.title, 'Replacement');
   await assert.rejects(() => repository.replace(first.id, 'owner-b', input('owner-b')), { code: 'not_found' });
   await repository.transition(first.id, 'ready_for_review');
+  const revised = await repository.replace(first.id, 'owner-a', input('owner-a', 'Revised after submission'));
+  assert.equal(revised.status, 'pending');
+  assert.equal(revised.revision, 3);
+  await repository.transition(first.id, 'ready_for_review');
+  await repository.transition(first.id, 'publishing');
+  await repository.transition(first.id, 'published');
   await assert.rejects(() => repository.replace(first.id, 'owner-a', input('owner-a')), { code: 'state_conflict' });
 });
 

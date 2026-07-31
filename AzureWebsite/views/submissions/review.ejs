@@ -34,7 +34,7 @@
 
     <main id="main-content" class="submission-main">
       <nav class="submission-breadcrumb" aria-label="Breadcrumb">
-        <a href="/research/submissions/new"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Choose another file</span></a>
+        <a href="/research/submissions"><i class="ph ph-arrow-left" aria-hidden="true"></i><span>My submissions</span></a>
       </nav>
 
       <header class="submission-page-header">
@@ -55,6 +55,33 @@
           <span class="submission-private-marker"><i class="ph ph-lock" aria-hidden="true"></i>Private</span>
         </div>
         <div class="submission-preview research-prose"><%- submission.previewHtml %></div>
+      </section>
+
+      <section class="submission-actions" aria-labelledby="draft-actions-title">
+        <div>
+          <h2 id="draft-actions-title">Manage draft</h2>
+          <p>Edit the Markdown in the browser, upload a replacement file, or remove this private draft.</p>
+        </div>
+        <div class="submission-action-group">
+          <a class="submission-button is-secondary" href="/research/submissions/<%= submission.id %>/edit">
+            <i class="ph ph-pencil-simple" aria-hidden="true"></i>
+            <span>Edit Markdown</span>
+          </a>
+          <a class="submission-button is-secondary" href="/research/submissions/<%= submission.id %>/replace">
+            <i class="ph ph-upload-simple" aria-hidden="true"></i>
+            <span>Replace file</span>
+          </a>
+          <details class="submission-delete-control">
+            <summary class="submission-button is-danger">Delete draft</summary>
+            <div class="submission-delete-confirmation">
+              <p>This permanently removes the stored Markdown. It cannot be undone.</p>
+              <form action="/research/submissions/<%= submission.id %>/delete" method="post">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                <button class="submission-button is-danger" type="submit">Confirm deletion</button>
+              </form>
+            </div>
+          </details>
+        </div>
       </section>
 
       <div class="submission-confirmation">

@@ -110,6 +110,15 @@ async function upload(baseUrl, auth, markdown, filename = 'note.md', path = '/re
   });
 }
 
+async function editMarkdown(baseUrl, path, auth, markdown) {
+  const body = new FormData();
+  body.append('_csrf', auth.csrf);
+  body.append('markdown', markdown);
+  return fetch(baseUrl + path, {
+    method: 'POST', redirect: 'manual', headers: { Cookie: auth.cookie, Origin: baseUrl }, body
+  });
+}
+
 test('submission routes require authentication and conceal other owners records', async () => {
   const context = fixture();
   const owner = context.auth('owner-google-sub');
@@ -175,6 +184,79 @@ test('upload requires same-origin CSRF, validates bytes, and renders only a sani
     assert.match(html, /&lt;script&gt;/);
     assert.doesNotMatch(html, /<script>|href="javascript:|private-contact-value/);
     assert.match(html, /private and unavailable to public search|does not publish or index/i);
+    assert.match(html, new RegExp(`/research/submissions/[A-Za-z0-9_-]+/edit`));
+    assert.match(html, /Edit Markdown/);
+    assert.match(html, /Replace file/);
+    assert.match(html, /Delete draft/);
+
+    const record = (await context.repository.listByOwner('owner-google-sub'))[0];
+    const editor = await fetch(baseUrl + `/research/submissions/${record.id}/edit`, {
+      headers: { Cookie: owner.cookie }
+    });
+    const editorHtml = await editor.text();
+    assert.equal(editor.status, 200);
+    assert.match(editorHtml, /Markdown source/);
+    assert.match(editorHtml, /Sanitized note/);
+    assert.doesNotMatch(editorHtml, /<script>alert/);
+
+    const edited = await editMarkdown(
+      baseUrl,
+      `/research/submissions/${record.id}/edit`,
+      owner,
+      '---\ntitle: Revised note\n---\n\n# Revised finding\n\nUpdated evidence.\n'
+    );
+    assert.equal(edited.status, 303);
+    assert.match(edited.headers.get('location'), /\/review\?status=edited$/);
+    const revised = await context.repository.get(record.id);
+    assert.equal(revised.metadata.title, 'Revised note');
+    assert.equal(revised.revision, 2);
+  });
+});
+
+test('owners can revise submitted work and delete private or published submissions', async () => {
+  const context = fixture();
+  const owner = context.auth('owner-google-sub');
+  const submitted = await context.repository.create({
+    ownerId: 'owner-google-sub',
+    markdown: '---\ntitle: Awaiting review\n---\n\n# Finding\n\nEvidence.\n',
+    metadata: { title: 'Awaiting review' },
+    status: 'ready_for_review'
+  });
+
+  await withServer(context.application, async (baseUrl) => {
+    const detail = await fetch(baseUrl + `/research/submissions/${submitted.id}`, {
+      headers: { Cookie: owner.cookie }
+    });
+    const detailHtml = await detail.text();
+    assert.equal(detail.status, 200);
+    assert.match(detailHtml, /Edit Markdown/);
+    assert.match(detailHtml, /Delete submission/);
+
+    const edited = await editMarkdown(
+      baseUrl,
+      `/research/submissions/${submitted.id}/edit`,
+      owner,
+      '---\ntitle: Revised draft\n---\n\n# Updated finding\n'
+    );
+    assert.equal(edited.status, 303);
+    assert.equal((await context.repository.get(submitted.id)).status, 'pending');
+
+    const deletedPrivate = await postForm(baseUrl, `/research/submissions/${submitted.id}/delete`, owner);
+    assert.equal(deletedPrivate.status, 303);
+    assert.equal((await context.repository.get(submitted.id)).status, 'deleted');
+
+    const published = await context.repository.create({
+      ownerId: 'owner-google-sub',
+      markdown: '---\ntitle: Published owner note\n---\n\n# Finding\n\nEvidence.\n',
+      metadata: { title: 'Published owner note' },
+      status: 'ready_for_review'
+    });
+    await postForm(baseUrl, `/admin/submissions/${published.id}/publish`, context.auth('admin-google-sub'));
+    const ownerDelete = await postForm(baseUrl, `/research/submissions/${published.id}/delete`, owner);
+    assert.equal(ownerDelete.status, 303);
+    assert.equal((await context.repository.get(published.id)).status, 'deleted');
+    assert.equal(context.removedFromIndex.length, 1);
+    assert.equal(context.cacheClears(), 2);
   });
 });
 

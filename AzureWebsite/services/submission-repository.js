@@ -205,8 +205,12 @@ function createRepositoryOperations(load, save, options = {}) {
         if (!current || current.ownerId !== cleanOwnerId(ownerId)) {
           throw new SubmissionRepositoryError('not_found', 'Submission not found.', 404);
         }
-        if (current.status !== 'pending') {
-          throw new SubmissionRepositoryError('state_conflict', 'Only a pending submission can be replaced.', 409);
+        if (!['pending', 'ready_for_review', 'rejected', 'failed'].includes(current.status)) {
+          throw new SubmissionRepositoryError(
+            'state_conflict',
+            'Only a private submission that is not being published can be revised.',
+            409
+          );
         }
         const timestamp = new Date(now()).toISOString();
         const updated = {

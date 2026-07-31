@@ -38,37 +38,33 @@
       </nav>
 
       <header class="submission-page-header">
-        <p class="submission-kicker">Replace research file</p>
+        <p class="submission-kicker">Edit Markdown</p>
         <h1><%= submission.title %></h1>
-        <p>The replacement is validated from its bytes and receives a new sanitized preview. You will review it again before sending it to the administrator.</p>
+        <p>Update the source directly. Saving validates the same UTF-8 Markdown and front matter rules as a file upload, then returns you to a new private preview.</p>
       </header>
 
       <% if (flash) { %><p class="submission-notice" role="status"><%= flash %></p><% } %>
       <% if (error) { %><p class="submission-notice is-error" role="alert"><%= error %></p><% } %>
 
-      <div class="submission-form-layout">
-        <form class="submission-form" action="/research/submissions/<%= submission.id %>/replace" method="post" enctype="multipart/form-data">
+      <div class="submission-form-layout submission-editor-layout">
+        <form class="submission-form" action="/research/submissions/<%= submission.id %>/edit" method="post" enctype="multipart/form-data">
           <input type="hidden" name="_csrf" value="<%= csrfToken %>">
           <div class="submission-field">
-            <label for="replacement-file">New Markdown file</label>
-            <input id="replacement-file" name="researchFile" type="file" accept=".md,text/markdown" required aria-describedby="replacement-requirements">
-            <p id="replacement-requirements">Only UTF-8 <code>.md</code>, up to 3 MiB. Upload and account quotas still apply.</p>
+            <label for="submission-markdown">Markdown source</label>
+            <textarea class="submission-markdown-editor" id="submission-markdown" name="markdown" required spellcheck="false" aria-describedby="markdown-edit-requirements"><%= submission.markdown %></textarea>
+            <p id="markdown-edit-requirements">UTF-8 Markdown, up to 3 MiB. Front matter remains part of the source and is revalidated when saved.</p>
           </div>
-          <button class="submission-button" type="submit">Validate and replace</button>
+          <button class="submission-button" type="submit">
+            <i class="ph ph-check" aria-hidden="true"></i>
+            <span>Save and preview</span>
+          </button>
         </form>
 
-        <aside class="submission-guidance" aria-labelledby="replacement-impact-title">
-          <h2 id="replacement-impact-title">Replacement effect</h2>
-          <p>The previous pending file is superseded. It will not remain searchable, and neither version is available to the assistant.</p>
+        <aside class="submission-guidance" aria-labelledby="edit-effect-title">
+          <h2 id="edit-effect-title">What saving does</h2>
+          <p>Your current stored version is replaced. The updated version stays private and returns to draft status, even if it was already awaiting review.</p>
         </aside>
       </div>
-
-      <section class="submission-review submission-current-preview" aria-labelledby="current-preview-title">
-        <div class="submission-preview-heading">
-          <div><p class="submission-kicker">Current sanitized preview</p><h2 id="current-preview-title">Before replacement</h2></div>
-        </div>
-        <div class="submission-preview research-prose"><%- submission.previewHtml %></div>
-      </section>
     </main>
   </body>
 </html>

@@ -9,7 +9,11 @@ const {
   requireOwner,
   sameSecret
 } = require('../services/submission-authorization');
-const { MultipartUploadError, parseMarkdownMultipart } = require('../services/multipart-markdown');
+const {
+  MultipartUploadError,
+  parseMarkdownEditMultipart,
+  parseMarkdownMultipart
+} = require('../services/multipart-markdown');
 const {
   SubmissionValidationError,
   createSanitizedPreview,
@@ -21,6 +25,8 @@ const SESSION_COOKIE = 'research_session';
 const LOGIN_COOKIE = 'research_login';
 const LOGIN_TTL_MS = 10 * 60 * 1000;
 const LOGIN_ATTEMPT_LIMIT = 1000;
+const OWNER_EDITABLE_STATES = new Set(['pending', 'ready_for_review', 'rejected', 'failed']);
+const OWNER_DELETABLE_STATES = new Set(['pending', 'ready_for_review', 'published', 'rejected', 'failed']);
 
 function createLoginAttemptStore(options = {}) {
   const now = options.now || Date.now;
@@ -67,6 +73,7 @@ function statusMessage(value) {
   const messages = {
     created: 'Private preview created. Review it before submitting.',
     submitted: 'Submission sent for administrator review.',
+    edited: 'Markdown changes saved and revalidated.',
     replaced: 'Pending Markdown replaced and revalidated.',
     deleted: 'Submission data was deleted.',
     published: 'Submission published and indexed successfully.',
@@ -178,7 +185,7 @@ function createSubmissionsRouter(system = {}) {
     return requireOwner(session, await repository.get(id));
   }
 
-  function viewRecord(record, { admin = false } = {}) {
+  function viewRecord(record, { admin = false, includeMarkdown = false } = {}) {
     const normalized = record.status === 'deleted' ? { title: 'Deleted submission' } : normalizeSubmissionForPublication(record);
     return {
       id: record.id,
@@ -189,8 +196,18 @@ function createSubmissionsRouter(system = {}) {
       previewHtml: record.status === 'deleted' ? '' : createSanitizedPreview(record.markdown),
       rejectionReason: record.rejectionReason || '',
       slug: record.publishedSlug || '',
+      ...(includeMarkdown ? { markdown: record.markdown } : {}),
       ...(admin ? { ownerLabel: ownerLabel(record.ownerId) } : {})
     };
+  }
+
+  function requireOwnerEditable(record) {
+    if (!OWNER_EDITABLE_STATES.has(record.status)) {
+      const error = new Error('This submission cannot be edited while it is being published or after publication.');
+      error.status = 409;
+      throw error;
+    }
+    return record;
   }
 
   function renderSignIn(req, res, status = 200, error = '') {
@@ -339,12 +356,54 @@ function createSubmissionsRouter(system = {}) {
   router.post('/research/submissions', submitPending);
   router.post('/research/submissions/:id/submit', submitPending);
 
+  router.get('/research/submissions/:id/edit', async (req, res) => {
+    try {
+      const record = requireOwnerEditable(await ownedRecord(req, req.params.id));
+      return res.render('submissions/edit', common(req, {
+        title: 'Edit research Markdown',
+        submission: viewRecord(record, { includeMarkdown: true })
+      }));
+    } catch (error) {
+      const failure = publicError(error);
+      return res.status(failure.status).render('error', {
+        title: 'Editing unavailable', status: failure.status, heading: 'Editing unavailable.', message: failure.message
+      });
+    }
+  });
+
+  router.post('/research/submissions/:id/edit', async (req, res) => {
+    try {
+      requireUser(req);
+      if (!requestIsSameOrigin(req)) throw new SubmissionAuthorizationError('cross_origin_request', 'The form must be submitted from this site.', 403);
+      const parsed = await parseMarkdownEditMultipart(req);
+      verifyBrowserPost(req, parsed.csrfToken);
+      const current = requireOwnerEditable(await ownedRecord(req, req.params.id));
+      const limit = quota({ accountId: req.authSession.accountId, ip: req.ip });
+      if (!limit.allowed) {
+        const error = new Error(`Edit limit reached. Try again in ${limit.retryAfterSeconds} seconds.`);
+        error.status = 429;
+        throw error;
+      }
+      const validated = validateMarkdownUpload({
+        filename: 'submission.md',
+        bytes: Buffer.from(parsed.markdown, 'utf8')
+      });
+      await repository.replace(current.id, req.authSession.accountId, {
+        markdown: validated.markdown,
+        metadata: validated.metadata
+      });
+      return res.redirect(303, `/research/submissions/${current.id}/review?status=edited`);
+    } catch (error) {
+      const failure = publicError(error);
+      return res.status(failure.status).render('error', {
+        title: 'Edit failed', status: failure.status, heading: 'Edit failed.', message: failure.message
+      });
+    }
+  });
+
   router.get('/research/submissions/:id/replace', async (req, res) => {
     try {
-      const record = await ownedRecord(req, req.params.id);
-      if (record.status !== 'pending') {
-        const error = new Error('Only a pending submission can be replaced.'); error.status = 409; throw error;
-      }
+      const record = requireOwnerEditable(await ownedRecord(req, req.params.id));
       return res.render('submissions/replace', common(req, {
         title: 'Replace pending research', submission: viewRecord(record)
       }));
@@ -362,7 +421,7 @@ function createSubmissionsRouter(system = {}) {
       if (!requestIsSameOrigin(req)) throw new SubmissionAuthorizationError('cross_origin_request', 'The form must be submitted from this site.', 403);
       const parsed = await parseMarkdownMultipart(req);
       verifyBrowserPost(req, parsed.csrfToken);
-      const current = await ownedRecord(req, req.params.id);
+      const current = requireOwnerEditable(await ownedRecord(req, req.params.id));
       const limit = quota({ accountId: req.authSession.accountId, ip: req.ip });
       if (!limit.allowed) {
         const error = new Error(`Upload limit reached. Try again in ${limit.retryAfterSeconds} seconds.`); error.status = 429; throw error;
@@ -384,10 +443,15 @@ function createSubmissionsRouter(system = {}) {
     try {
       verifyBrowserPost(req, req.body?._csrf);
       const record = await ownedRecord(req, req.params.id);
-      if (record.status !== 'pending') {
-        const error = new Error('Only a pending submission can be deleted by its owner.'); error.status = 409; throw error;
+      if (!OWNER_DELETABLE_STATES.has(record.status)) {
+        const error = new Error('A submission cannot be deleted while publication is in progress.');
+        error.status = 409;
+        throw error;
       }
       await publication.remove(record.id);
+      if (record.status === 'published' && typeof system.onCorpusChanged === 'function') {
+        system.onCorpusChanged();
+      }
       return res.redirect(303, '/research/submissions?status=deleted');
     } catch (error) {
       const failure = publicError(error);

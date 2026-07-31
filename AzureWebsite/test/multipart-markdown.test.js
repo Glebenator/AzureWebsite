@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
-const { parseMarkdownMultipart } = require('../services/multipart-markdown');
+const { parseMarkdownEditMultipart, parseMarkdownMultipart } = require('../services/multipart-markdown');
 
 function multipart(parts, boundary = 'test-boundary') {
   const body = parts.map((part) => {
@@ -56,5 +56,29 @@ test('multipart parser rejects oversized, missing, and unexpected file fields', 
       { file: true, name: 'other', filename: 'note.md', value: '# Note' }
     ])),
     (error) => error.code === 'invalid_file_field'
+  );
+});
+
+test('Markdown edit parser accepts only one bounded source field and CSRF token', async () => {
+  const result = await parseMarkdownEditMultipart(multipart([
+    { name: '_csrf', value: 'csrf-token' },
+    { name: 'markdown', value: '---\ntitle: Revised\n---\n\n# Finding\n' }
+  ]));
+  assert.equal(result.csrfToken, 'csrf-token');
+  assert.match(result.markdown, /title: Revised/);
+
+  await assert.rejects(
+    parseMarkdownEditMultipart(multipart([
+      { name: '_csrf', value: 'csrf-token' },
+      { name: 'markdown', value: '123456' }
+    ]), { maximumBytes: 5 }),
+    (error) => error.code === 'file_too_large'
+  );
+  await assert.rejects(
+    parseMarkdownEditMultipart(multipart([
+      { name: '_csrf', value: 'csrf-token' },
+      { file: true, name: 'researchFile', filename: 'note.md', value: '# Note' }
+    ])),
+    (error) => error.code === 'unexpected_file'
   );
 });

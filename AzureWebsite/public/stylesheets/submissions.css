@@ -292,6 +292,14 @@
   resize: vertical;
 }
 
+.submission-field .submission-markdown-editor {
+  min-height: min(62vh, 42rem);
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
 .submission-field > p,
 .submission-guidance p,
 .admin-publish-form > p,
@@ -586,6 +594,49 @@
   gap: 0.75rem;
 }
 
+.submission-delete-control {
+  flex: 0 1 auto;
+}
+
+.submission-delete-control > summary {
+  list-style: none;
+}
+
+.submission-delete-control > summary::-webkit-details-marker {
+  display: none;
+}
+
+.submission-delete-control[open] {
+  flex-basis: 100%;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, var(--submission-danger) 45%, var(--line));
+  background: color-mix(in srgb, var(--submission-danger) 4%, var(--canvas));
+}
+
+.submission-delete-control[open] > summary {
+  min-height: auto;
+  justify-content: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 0.82rem;
+}
+
+.submission-delete-confirmation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+.submission-delete-confirmation p {
+  max-width: 48ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
 .submission-table-wrap {
   overflow-x: auto;
   border-top: 1px solid var(--line-strong);
@@ -814,6 +865,11 @@
   .admin-delete-form,
   .admin-delete-form .submission-button {
     width: 100%;
+  }
+
+  .submission-delete-confirmation {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
