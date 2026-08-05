@@ -79,7 +79,30 @@
                 <tr>
                   <th scope="row"><a href="/admin/submissions/<%= submission.id %>"><%= submission.title %></a></th>
                   <td class="submission-owner"><%= submission.ownerLabel %></td>
-                  <td><span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span></td>
+                  <td>
+                    <div
+                      class="submission-queue-progress"
+                      <% if (submission.publicationProgress.active) { %>
+                        data-publication-refresh
+                        data-publication-status="<%= submission.status %>"
+                        data-publication-status-url="/admin/submissions/<%= submission.id %>/status"
+                      <% } %>
+                    >
+                      <span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span>
+                      <% if (submission.publicationProgress.active || submission.status === 'failed') { %>
+                        <p data-publication-summary><%= submission.publicationProgress.summary %></p>
+                        <% if (submission.publicationProgress.total !== null) { %>
+                          <progress
+                            data-publication-meter
+                            max="<%= submission.publicationProgress.total %>"
+                            value="<%= submission.publicationProgress.completed || 0 %>"
+                            aria-label="Embedding progress"
+                          ><%= submission.publicationProgress.completed || 0 %> of <%= submission.publicationProgress.total %></progress>
+                        <% } %>
+                        <small data-publication-detail><%= submission.publicationProgress.detail %></small>
+                      <% } %>
+                    </div>
+                  </td>
                   <td><time datetime="<%= submission.updatedAt %>"><%= displayDate(submission.updatedAt) %></time></td>
                   <td><a class="text-link" href="/admin/submissions/<%= submission.id %>">Review</a></td>
                 </tr>
@@ -89,5 +112,6 @@
         </div>
       <% } %>
     </main>
+    <script src="/javascripts/submission-publication-status.js" defer></script>
   </body>
 </html>

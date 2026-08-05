@@ -66,7 +66,9 @@ async function embedDocuments(documents, embeddingClient, options = {}) {
       throw new Error('Embedding response did not contain one vector per research chunk.');
     }
     batch.forEach((document, index) => embedded.push({ ...document, contentVector: vectors[index] }));
-    if (typeof options.onProgress === 'function') options.onProgress(embedded.length, documents.length);
+    if (typeof options.onProgress === 'function') {
+      await options.onProgress(embedded.length, documents.length);
+    }
   }
   validateVectorDocuments(embedded);
   return embedded;

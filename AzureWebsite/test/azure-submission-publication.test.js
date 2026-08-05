@@ -175,8 +175,12 @@ test('Azure indexer prepares embeddings without Search writes and commits them a
     sleep: async () => {}
   });
 
-  const prepared = await indexer.prepare(input());
+  const embeddingProgress = [];
+  const prepared = await indexer.prepare(input(), {
+    onProgress(completed, total) { embeddingProgress.push([completed, total]); }
+  });
   assert.equal(prepared.vectors.length, 1);
+  assert.deepEqual(embeddingProgress, [[0, 1], [1, 1]]);
   assert.equal(requests.length, 0);
 
   const result = await indexer.commit({

@@ -50,10 +50,12 @@ function fixture(options = {}) {
       async remove() { return true; }
     },
     searchIndex: {
-      async prepare(payload) {
+      async prepare(payload, progress = {}) {
+        await progress.onProgress?.(0, 3);
         if (typeof options.onEmbeddingStarted === 'function') options.onEmbeddingStarted(payload);
         if (options.embeddingGate) await options.embeddingGate;
-        return { prepared: true };
+        await progress.onProgress?.(3, 3);
+        return { prepared: true, vectors: [[], [], []] };
       },
       async commit(payload, prepared) {
         assert.equal(prepared.prepared, true);
@@ -304,17 +306,29 @@ test('only the sole admin can queue publication and the request returns before e
     });
     const progressHtml = await progress.text();
     assert.equal(progress.status, 200);
-    assert.match(progressHtml, /Embedding<\/h2>/);
-    assert.match(progressHtml, /does not block this page/i);
+    assert.match(progressHtml, /Embedding 0 of 3 sections<\/h2>/);
+    assert.match(progressHtml, /0 of 3 sections/);
+    assert.match(progressHtml, /Public Markdown/);
+    assert.match(progressHtml, /Search index/);
+    assert.match(progressHtml, /Visibility/);
     assert.match(progressHtml, /data-publication-refresh/);
     assert.match(progressHtml, /submission-publication-status\.js/);
+    const queue = await fetch(baseUrl + '/admin/submissions', {
+      headers: { Cookie: admin.cookie }
+    });
+    const queueHtml = await queue.text();
+    assert.equal(queue.status, 200);
+    assert.match(queueHtml, /Embedding 0 of 3 sections/);
+    assert.match(queueHtml, /data-publication-meter/);
     const statusResponse = await fetch(baseUrl + `/admin/submissions/${record.id}/status`, {
       headers: { Cookie: admin.cookie, Accept: 'application/json' }
     });
-    assert.deepEqual(await statusResponse.json(), {
-      status: 'embedding',
-      updatedAt: (await context.repository.get(record.id)).updatedAt
-    });
+    const statusPayload = await statusResponse.json();
+    assert.equal(statusPayload.status, 'embedding');
+    assert.equal(statusPayload.updatedAt, (await context.repository.get(record.id)).updatedAt);
+    assert.equal(statusPayload.progress.summary, 'Embedding 0 of 3 sections');
+    assert.equal(statusPayload.progress.completed, 0);
+    assert.equal(statusPayload.progress.total, 3);
 
     releaseEmbedding();
     await context.publicationWorker.waitForIdle();

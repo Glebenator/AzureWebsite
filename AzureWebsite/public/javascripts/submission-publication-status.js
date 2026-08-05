@@ -1,13 +1,28 @@
 'use strict';
 
 (function() {
-  var region = document.querySelector('[data-publication-refresh]');
-  if (!region) return;
-  var currentStatus = region.getAttribute('data-publication-status');
-  var statusUrl = region.getAttribute('data-publication-status-url');
-  if (!currentStatus || !statusUrl) return;
+  var regions = Array.prototype.slice.call(document.querySelectorAll('[data-publication-refresh]'));
+  if (!regions.length) return;
 
-  function poll() {
+  function updateRegion(region, payload) {
+    var progress = payload && payload.progress;
+    if (!progress) return;
+    var summary = region.querySelector('[data-publication-summary]');
+    var detail = region.querySelector('[data-publication-detail]');
+    var meter = region.querySelector('[data-publication-meter]');
+    if (summary) summary.textContent = progress.summary || '';
+    if (detail) detail.textContent = progress.detail || '';
+    if (meter && Number.isInteger(progress.total) && Number.isInteger(progress.completed)) {
+      meter.max = progress.total;
+      meter.value = progress.completed;
+      meter.textContent = progress.completed + ' of ' + progress.total;
+    }
+  }
+
+  function poll(region) {
+    var currentStatus = region.getAttribute('data-publication-status');
+    var statusUrl = region.getAttribute('data-publication-status-url');
+    if (!currentStatus || !statusUrl) return;
     window.fetch(statusUrl, {
       cache: 'no-store',
       credentials: 'same-origin',
@@ -20,11 +35,14 @@
         window.location.reload();
         return;
       }
-      window.setTimeout(poll, 5000);
+      updateRegion(region, payload);
+      window.setTimeout(function() { poll(region); }, 5000);
     }).catch(function() {
-      window.setTimeout(poll, 15000);
+      window.setTimeout(function() { poll(region); }, 15000);
     });
   }
 
-  window.setTimeout(poll, 5000);
+  regions.forEach(function(region) {
+    window.setTimeout(function() { poll(region); }, 5000);
+  });
 })();

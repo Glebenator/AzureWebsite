@@ -20,6 +20,7 @@ const {
   normalizeSubmissionForPublication,
   validateMarkdownUpload
 } = require('../services/submission-validation');
+const { createPublicationProgress } = require('../services/submission-publication-progress');
 
 const SESSION_COOKIE = 'research_session';
 const LOGIN_COOKIE = 'research_login';
@@ -196,6 +197,7 @@ function createSubmissionsRouter(system = {}) {
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       previewHtml: record.status === 'deleted' ? '' : createSanitizedPreview(record.markdown),
+      publicationProgress: createPublicationProgress(record),
       rejectionReason: record.rejectionReason || '',
       failureCode: record.failureCode || '',
       slug: record.publishedSlug || '',
@@ -467,7 +469,11 @@ function createSubmissionsRouter(system = {}) {
   router.get('/research/submissions/:id/status', async (req, res) => {
     try {
       const record = await ownedRecord(req, req.params.id);
-      return res.json({ status: record.status, updatedAt: record.updatedAt });
+      return res.json({
+        progress: createPublicationProgress(record),
+        status: record.status,
+        updatedAt: record.updatedAt
+      });
     } catch (error) {
       const failure = publicError(error);
       return res.status(failure.status).json({ error: { message: failure.message } });
@@ -528,7 +534,11 @@ function createSubmissionsRouter(system = {}) {
       requireSoleAdmin(req);
       const record = await repository.get(req.params.id);
       if (!record) { const error = new Error('Submission not found.'); error.status = 404; throw error; }
-      return res.json({ status: record.status, updatedAt: record.updatedAt });
+      return res.json({
+        progress: createPublicationProgress(record),
+        status: record.status,
+        updatedAt: record.updatedAt
+      });
     } catch (error) {
       const failure = publicError(error);
       return res.status(failure.status).json({ error: { message: failure.message } });

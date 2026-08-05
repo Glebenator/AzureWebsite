@@ -29,10 +29,12 @@ function fakeAdapters(events, options = {}) {
       }
     },
     searchIndex: {
-      async prepare(payload) {
+      async prepare(payload, progress = {}) {
         events.push(`embedding:${payload.slug}`);
         if (options.embeddingFails) throw new Error('embedding failed');
-        return { prepared: true };
+        await progress.onProgress?.(0, 3);
+        await progress.onProgress?.(3, 3);
+        return { prepared: true, vectors: [[], [], []] };
       },
       async commit(payload, prepared) {
         assert.equal(prepared.prepared, true);
@@ -67,12 +69,14 @@ test('publication writes public content, indexes it, and only then marks publish
   assert.deepEqual(events, ['embedding:reviewed-research', 'public.write:reviewed-research', 'index.write:reviewed-research']);
   assert.deepEqual(result, { id: ready.id, slug: 'reviewed-research', status: 'published', idempotent: false });
   assert.equal(stored.status, 'published');
-  assert.deepEqual(stored.publication, {
-    publicWritten: true,
-    indexed: true,
-    publicVersion: 'public-etag',
-    indexVersion: 'index-version'
-  });
+  assert.equal(stored.publication.publicWritten, true);
+  assert.equal(stored.publication.indexed, true);
+  assert.equal(stored.publication.publicVersion, 'public-etag');
+  assert.equal(stored.publication.indexVersion, 'index-version');
+  assert.equal(stored.publication.embeddingCompleted, 3);
+  assert.equal(stored.publication.embeddingTotal, 3);
+  assert.equal(stored.publication.substage, 'published');
+  assert.match(stored.publication.activatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test('published retry is idempotent and concurrent publish requests do not duplicate documents', async () => {
@@ -99,7 +103,9 @@ test('index failure compensates index and public writes, records failed, and saf
   await assert.rejects(() => coordinator.publish(ready.id), { code: 'publication_failed' });
   const failed = await repository.get(ready.id);
   assert.equal(failed.status, 'failed');
-  assert.deepEqual(failed.publication, { publicWritten: false, indexed: false });
+  assert.equal(failed.publication.publicWritten, false);
+  assert.equal(failed.publication.indexed, false);
+  assert.equal(failed.publication.substage, 'failed');
   assert.deepEqual(events, [
     'embedding:stable-slug',
     'public.write:stable-slug',
@@ -162,7 +168,9 @@ test('embedding failure remains private and retry starts again at the embedding 
   const failed = await repository.get(ready.id);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.failureCode, 'embedding_failed');
-  assert.deepEqual(failed.publication, { publicWritten: false, indexed: false });
+  assert.equal(failed.publication.publicWritten, false);
+  assert.equal(failed.publication.indexed, false);
+  assert.equal(failed.publication.substage, 'failed');
   assert.deepEqual(events, ['embedding:private-until-embedded']);
 
   options.embeddingFails = false;

@@ -286,8 +286,12 @@ function createAzureSubmissionIndexer(options = {}) {
       lastModified: new Date(0)
     }, value.markdown);
     if (!rawDocuments.length) throw new Error('Publication produced no searchable sections.');
+    if (typeof optionsForRequest.onProgress === 'function') {
+      await optionsForRequest.onProgress(0, rawDocuments.length);
+    }
     const documents = await embedDocuments(rawDocuments, embeddingClient, {
       batchSize: 1,
+      onProgress: optionsForRequest.onProgress,
       signal: optionsForRequest.signal
     });
     return Object.freeze({

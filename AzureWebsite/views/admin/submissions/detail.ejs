@@ -15,7 +15,9 @@
     var date = new Date(value);
     return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
-  var canReview = ['ready_for_review', 'failed'].includes(submission.status);
+  var canPublish = ['ready_for_review', 'failed'].includes(submission.status)
+    || (submission.status === 'publishing' && submission.failureCode === 'cleanup_required');
+  var canReject = ['ready_for_review', 'failed'].includes(submission.status);
   var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
   var canDelete = !publicationActive && submission.status !== 'deleted';
 %>
@@ -78,14 +80,24 @@
       <% if (publicationActive) { %>
         <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/admin/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
           <p class="submission-kicker">Background publication</p>
-          <h2 id="publication-progress-title"><%= statusLabels[submission.status] %></h2>
-          <% if (submission.status === 'embedding_pending') { %>
-            <p>The request is queued. The Markdown remains private while the embedding worker starts.</p>
-          <% } else if (submission.status === 'embedding') { %>
-            <p>Search vectors are being created. This can take several minutes and does not block this page.</p>
-          <% } else { %>
-            <p>Embeddings are ready. The public note and verified Search documents are now being committed.</p>
+          <h2 id="publication-progress-title" data-publication-summary><%= submission.publicationProgress.summary %></h2>
+          <p data-publication-detail><%= submission.publicationProgress.detail %></p>
+          <% if (submission.publicationProgress.total !== null) { %>
+            <progress
+              data-publication-meter
+              max="<%= submission.publicationProgress.total %>"
+              value="<%= submission.publicationProgress.completed || 0 %>"
+              aria-label="Embedding progress"
+            ><%= submission.publicationProgress.completed || 0 %> of <%= submission.publicationProgress.total %></progress>
           <% } %>
+          <ol class="publication-checkpoints" aria-label="Publication checkpoints">
+            <% submission.publicationProgress.checkpoints.forEach(function(checkpoint) { %>
+              <li class="checkpoint-<%= checkpoint.status %>">
+                <i class="ph <%= checkpoint.status === 'complete' ? 'ph-check-circle' : checkpoint.status === 'active' ? 'ph-circle-notch' : checkpoint.status === 'failed' ? 'ph-warning-circle' : 'ph-circle' %>" aria-hidden="true"></i>
+                <span><strong><%= checkpoint.label %></strong><small><%= checkpoint.detail %></small></span>
+              </li>
+            <% }); %>
+          </ol>
           <p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p>
         </section>
       <% } %>
@@ -108,7 +120,7 @@
         </section>
       <% } %>
 
-      <% if (canReview || canDelete) { %>
+      <% if (canPublish || canReject || canDelete) { %>
         <section class="admin-decision" aria-labelledby="decision-title">
           <div class="admin-decision-intro">
             <p class="submission-kicker">Server-authorized actions</p>
@@ -116,13 +128,15 @@
             <p>Publishing queues embedding first, then commits the public archive and Search documents. The note activates only after both finish.</p>
           </div>
 
-          <% if (canReview) { %>
+          <% if (canPublish) { %>
             <form class="admin-publish-form" action="/admin/submissions/<%= submission.id %>/publish" method="post">
               <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-              <button class="submission-button" type="submit"><i class="ph ph-check" aria-hidden="true"></i><span>Publish submission</span></button>
+              <button class="submission-button" type="submit"><i class="ph ph-check" aria-hidden="true"></i><span><%= submission.failureCode === 'cleanup_required' ? 'Retry publication' : 'Publish submission' %></span></button>
               <p>This returns immediately. Progress continues in the background and is safe to retry after a failure.</p>
             </form>
+          <% } %>
 
+          <% if (canReject) { %>
             <form class="submission-form admin-reject-form" action="/admin/submissions/<%= submission.id %>/reject" method="post">
               <input type="hidden" name="_csrf" value="<%= csrfToken %>">
               <div class="submission-field">

@@ -731,6 +731,99 @@
   font-size: 0.82rem;
 }
 
+.submission-progress progress,
+.submission-queue-progress progress {
+  display: block;
+  width: min(100%, 28rem);
+  height: 0.42rem;
+  margin: 0.85rem 0 0;
+  overflow: hidden;
+  border: 0;
+  background: var(--line);
+}
+
+.submission-progress progress::-webkit-progress-bar,
+.submission-queue-progress progress::-webkit-progress-bar {
+  background: var(--line);
+}
+
+.submission-progress progress::-webkit-progress-value,
+.submission-queue-progress progress::-webkit-progress-value,
+.submission-progress progress::-moz-progress-bar,
+.submission-queue-progress progress::-moz-progress-bar {
+  background: var(--submission-warning);
+}
+
+.publication-checkpoints {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  padding: 0;
+  margin: 1.25rem 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.publication-checkpoints li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-items: start;
+  padding: 0.9rem 0.8rem 0.9rem 0;
+  color: var(--muted);
+}
+
+.publication-checkpoints li + li {
+  padding-left: 0.8rem;
+  border-left: 1px solid var(--line);
+}
+
+.publication-checkpoints .checkpoint-complete {
+  color: var(--submission-success);
+}
+
+.publication-checkpoints .checkpoint-active,
+.publication-checkpoints .checkpoint-failed {
+  color: var(--submission-warning);
+}
+
+.publication-checkpoints strong,
+.publication-checkpoints small {
+  display: block;
+}
+
+.publication-checkpoints strong {
+  color: var(--ink);
+  font-size: 0.78rem;
+}
+
+.publication-checkpoints small {
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.submission-queue-progress {
+  min-width: 13rem;
+}
+
+.submission-queue-progress p,
+.submission-queue-progress small {
+  display: block;
+  margin: 0.5rem 0 0;
+  max-width: 24rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.submission-queue-progress small {
+  margin-top: 0.3rem;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+}
+
 .admin-decision-intro {
   grid-row: 1 / span 3;
 }
@@ -814,6 +907,20 @@
 }
 
 @media (max-width: 48rem) {
+  .publication-checkpoints {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .publication-checkpoints li:nth-child(3) {
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .publication-checkpoints li:nth-child(4) {
+    border-top: 1px solid var(--line);
+  }
+
   .submission-header-actions {
     width: 100%;
     align-items: stretch;
@@ -855,6 +962,22 @@
 }
 
 @media (max-width: 36rem) {
+  .publication-checkpoints {
+    grid-template-columns: 1fr;
+  }
+
+  .publication-checkpoints li,
+  .publication-checkpoints li + li,
+  .publication-checkpoints li:nth-child(3) {
+    padding: 0.8rem 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .publication-checkpoints li:first-child {
+    border-top: 0;
+  }
+
   .site-header {
     display: block;
   }
