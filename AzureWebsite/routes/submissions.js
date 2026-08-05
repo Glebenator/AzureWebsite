@@ -76,6 +76,7 @@ function statusMessage(value) {
     edited: 'Markdown changes saved and revalidated.',
     replaced: 'Pending Markdown replaced and revalidated.',
     deleted: 'Submission data was deleted.',
+    embedding_pending: 'Publishing queued. Embedding will continue in the background.',
     published: 'Submission published and indexed successfully.',
     rejected: 'Submission rejected with a reason.'
   };
@@ -108,6 +109,7 @@ function createSubmissionsRouter(system = {}) {
   const oidc = system.oidc;
   const quota = system.quota;
   const publication = system.publication;
+  const publicationWorker = system.publicationWorker;
   const adminGoogleSub = system.adminGoogleSub || '';
   const loginAttempts = system.loginAttempts || createLoginAttemptStore(system);
   const production = Boolean(system.production);
@@ -195,6 +197,7 @@ function createSubmissionsRouter(system = {}) {
       updatedAt: record.updatedAt,
       previewHtml: record.status === 'deleted' ? '' : createSanitizedPreview(record.markdown),
       rejectionReason: record.rejectionReason || '',
+      failureCode: record.failureCode || '',
       slug: record.publishedSlug || '',
       ...(includeMarkdown ? { markdown: record.markdown } : {}),
       ...(admin ? { ownerLabel: ownerLabel(record.ownerId) } : {})
@@ -461,6 +464,16 @@ function createSubmissionsRouter(system = {}) {
     }
   });
 
+  router.get('/research/submissions/:id/status', async (req, res) => {
+    try {
+      const record = await ownedRecord(req, req.params.id);
+      return res.json({ status: record.status, updatedAt: record.updatedAt });
+    } catch (error) {
+      const failure = publicError(error);
+      return res.status(failure.status).json({ error: { message: failure.message } });
+    }
+  });
+
   router.get('/research/submissions/:id', async (req, res) => {
     try {
       const record = await ownedRecord(req, req.params.id);
@@ -510,16 +523,27 @@ function createSubmissionsRouter(system = {}) {
     }
   });
 
+  router.get('/admin/submissions/:id/status', async (req, res) => {
+    try {
+      requireSoleAdmin(req);
+      const record = await repository.get(req.params.id);
+      if (!record) { const error = new Error('Submission not found.'); error.status = 404; throw error; }
+      return res.json({ status: record.status, updatedAt: record.updatedAt });
+    } catch (error) {
+      const failure = publicError(error);
+      return res.status(failure.status).json({ error: { message: failure.message } });
+    }
+  });
+
   async function adminAction(req, res, action) {
     try {
       requireSoleAdmin(req);
       verifyBrowserPost(req, req.body?._csrf);
       await action();
-      if (
-        typeof system.onCorpusChanged === 'function'
-        && (req.path.endsWith('/publish') || req.path.endsWith('/delete'))
-      ) system.onCorpusChanged();
-      const result = req.path.endsWith('/publish') ? 'published' : req.path.endsWith('/reject') ? 'rejected' : 'deleted';
+      if (typeof system.onCorpusChanged === 'function' && req.path.endsWith('/delete')) {
+        system.onCorpusChanged();
+      }
+      const result = req.path.endsWith('/reject') ? 'rejected' : 'deleted';
       return res.redirect(303, `/admin/submissions${result === 'deleted' ? '' : `/${req.params.id}`}?status=${result}`);
     } catch (error) {
       const failure = publicError(error);
@@ -529,7 +553,22 @@ function createSubmissionsRouter(system = {}) {
     }
   }
 
-  router.post('/admin/submissions/:id/publish', (req, res) => adminAction(req, res, () => publication.publish(req.params.id)));
+  router.post('/admin/submissions/:id/publish', async (req, res) => {
+    try {
+      requireSoleAdmin(req);
+      verifyBrowserPost(req, req.body?._csrf);
+      const result = publicationWorker
+        ? await publicationWorker.enqueue(req.params.id)
+        : await publication.publish(req.params.id);
+      const status = result?.status === 'published' ? 'published' : 'embedding_pending';
+      return res.redirect(303, `/admin/submissions/${req.params.id}?status=${status}`);
+    } catch (error) {
+      const failure = publicError(error);
+      return res.status(failure.status).render('error', {
+        title: 'Administrator action failed', status: failure.status, heading: 'Administrator action failed.', message: failure.message
+      });
+    }
+  });
   router.post('/admin/submissions/:id/reject', (req, res) => adminAction(req, res, () => publication.reject(req.params.id, req.body?.reason)));
   router.post('/admin/submissions/:id/delete', (req, res) => adminAction(req, res, () => publication.remove(req.params.id)));
 

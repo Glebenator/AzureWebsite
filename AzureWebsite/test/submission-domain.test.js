@@ -24,10 +24,13 @@ test('state machine exposes only the reviewed publication path', () => {
   assert.equal(canTransition('pending', 'ready_for_review'), true);
   assert.equal(canTransition('pending', 'publishing'), false);
   assert.equal(canTransition('ready_for_review', 'pending'), true);
-  assert.equal(canTransition('ready_for_review', 'publishing'), true);
+  assert.equal(canTransition('ready_for_review', 'embedding_pending'), true);
+  assert.equal(canTransition('ready_for_review', 'embedding'), false);
+  assert.equal(canTransition('embedding_pending', 'embedding'), true);
+  assert.equal(canTransition('embedding', 'publishing'), true);
   assert.equal(canTransition('publishing', 'published'), true);
   assert.equal(canTransition('rejected', 'pending'), true);
-  assert.equal(canTransition('failed', 'publishing'), true);
+  assert.equal(canTransition('failed', 'embedding_pending'), true);
   assert.equal(canTransition('published', 'pending'), false);
 });
 
@@ -49,6 +52,8 @@ test('repository generates opaque IDs, isolates owners, and safely returns revis
   assert.equal(revised.status, 'pending');
   assert.equal(revised.revision, 3);
   await repository.transition(first.id, 'ready_for_review');
+  await repository.transition(first.id, 'embedding_pending');
+  await repository.transition(first.id, 'embedding');
   await repository.transition(first.id, 'publishing');
   await repository.transition(first.id, 'published');
   await assert.rejects(() => repository.replace(first.id, 'owner-a', input('owner-a')), { code: 'state_conflict' });

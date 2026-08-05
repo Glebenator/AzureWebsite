@@ -22,13 +22,15 @@ function safeLogPath(req) {
 
 function createApp(options) {
   var app = express();
-  var researchRepository = options && options.researchRepository
-    ? options.researchRepository
-    : createResearchRepository();
-  var researchAssistant;
   var submissionSystem = options && Object.prototype.hasOwnProperty.call(options, 'submissionSystem')
     ? options.submissionSystem
     : createSubmissionSystem();
+  var researchRepository = options && options.researchRepository
+    ? options.researchRepository
+    : createResearchRepository({
+        publicationVisibility: submissionSystem && submissionSystem.publicationVisibility
+      });
+  var researchAssistant;
   if (options && options.researchAssistant) {
     researchAssistant = options.researchAssistant;
   } else {
@@ -73,6 +75,11 @@ function createApp(options) {
   app.use('/', indexRouter);
   if (submissionSystem && submissionSystem.enabled && typeof submissionSystem.onCorpusChanged !== 'function') {
     submissionSystem.onCorpusChanged = function() { researchRepository.clearCache(); };
+  }
+  if (submissionSystem && submissionSystem.publicationWorker) {
+    submissionSystem.publicationWorker.start().catch(function(error) {
+      console.error('Submission publication recovery could not start.', error);
+    });
   }
   app.use('/', createSubmissionsRouter(submissionSystem));
   app.use('/research', createResearchRouter(researchRepository, researchAssistant, {

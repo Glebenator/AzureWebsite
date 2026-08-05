@@ -13,6 +13,7 @@ const {
 const MAX_MARKDOWN_BYTES = 3 * 1024 * 1024;
 const SEARCH_API_VERSION = '2026-04-01';
 const SEARCH_SCOPE = 'https://search.azure.com/.default';
+const SEARCH_REQUEST_TIMEOUT_MS = 30 * 1000;
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,127}$/;
 
@@ -115,7 +116,7 @@ function createAzurePublicPublisher(options = {}) {
   const containerClient = options.containerClient || createDefaultContainerClient(options, env, credential);
 
   const adapter = {
-    async write(input) {
+    async write(input, optionsForRequest = {}) {
       const value = publicationInput(input);
       const client = containerClient.getBlockBlobClient(value.blobName);
       try {
@@ -126,13 +127,16 @@ function createAzurePublicPublisher(options = {}) {
             contenthash: value.contentHash,
             operationhash: value.operationHash,
             source: 'reviewed-submission'
-          }
+          },
+          ...(optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : {})
         });
         if (!response?.etag) throw new Error('Azure Blob upload did not return an ETag.');
         return { blobName: value.blobName, etag: response.etag, lastModified: response.lastModified || new Date() };
       } catch (error) {
         if (![409, 412].includes(Number(error?.statusCode))) throw error;
-        const properties = await client.getProperties();
+        const properties = await client.getProperties(
+          optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : undefined
+        );
         if (
           properties?.metadata?.operationhash !== value.operationHash
           || properties?.metadata?.contenthash !== value.contentHash
@@ -143,12 +147,14 @@ function createAzurePublicPublisher(options = {}) {
       }
     },
 
-    async remove(input) {
+    async remove(input, optionsForRequest = {}) {
       const value = publicationIdentity(input);
       const client = containerClient.getBlockBlobClient(value.blobName);
       let properties;
       try {
-        properties = await client.getProperties();
+        properties = await client.getProperties(
+          optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : undefined
+        );
       } catch (error) {
         if (Number(error?.statusCode) === 404) return false;
         throw error;
@@ -156,7 +162,10 @@ function createAzurePublicPublisher(options = {}) {
       if (properties?.metadata?.operationhash !== value.operationHash) {
         throw new PublicationConflictError('Refusing to remove a public document owned by another operation.');
       }
-      await client.delete({ conditions: properties.etag ? { ifMatch: properties.etag } : undefined });
+      await client.delete({
+        conditions: properties.etag ? { ifMatch: properties.etag } : undefined,
+        ...(optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : {})
+      });
       return true;
     }
   };
@@ -165,19 +174,48 @@ function createAzurePublicPublisher(options = {}) {
 }
 
 async function defaultSearchRequest(credential, endpoint, path, options = {}) {
-  const token = await credential.getToken(SEARCH_SCOPE);
-  if (!token?.token) throw new Error('Unable to obtain an Azure AI Search access token.');
-  const response = await fetch(`${endpoint}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token.token}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    }
+  const controller = new AbortController();
+  let timedOut = false;
+  const externalAbort = () => controller.abort();
+  options.signal?.addEventListener?.('abort', externalAbort, { once: true });
+  if (options.signal?.aborted) controller.abort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, SEARCH_REQUEST_TIMEOUT_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  let rejectAbort;
+  const aborted = new Promise((_, reject) => {
+    rejectAbort = () => reject(Object.assign(new Error('Azure AI Search request was cancelled.'), { name: 'AbortError' }));
+    controller.signal.addEventListener('abort', rejectAbort, { once: true });
   });
-  if (!response.ok) throw new Error(`Azure AI Search request failed with status ${response.status}.`);
-  if (response.status === 204) return null;
-  return response.json();
+  try {
+    const token = await Promise.race([credential.getToken(SEARCH_SCOPE), aborted]);
+    if (!token?.token) throw new Error('Unable to obtain an Azure AI Search access token.');
+    const response = await fetch(`${endpoint}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token.token}`,
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      }
+    });
+    if (!response.ok) throw new Error(`Azure AI Search request failed with status ${response.status}.`);
+    if (response.status === 204) return null;
+    return response.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(timedOut
+        ? 'Azure AI Search request timed out.'
+        : 'Azure AI Search request was cancelled.', { cause: error });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', rejectAbort);
+    options.signal?.removeEventListener?.('abort', externalAbort);
+  }
 }
 
 function createAzureSubmissionIndexer(options = {}) {
@@ -190,7 +228,7 @@ function createAzureSubmissionIndexer(options = {}) {
   const wait = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const embeddingClient = options.embeddingClient || createAzureEmbeddingClient({ env, credential });
 
-  async function documentsForSlug(slug, select = 'id') {
+  async function documentsForSlug(slug, select = 'id', signal) {
     const documents = [];
     const pageSize = 1000;
     let skip = 0;
@@ -201,6 +239,7 @@ function createAzureSubmissionIndexer(options = {}) {
         `/indexes/${indexName}/docs/search?api-version=${SEARCH_API_VERSION}`,
         {
           method: 'POST',
+          signal,
           body: JSON.stringify({
             search: '*',
             filter: `articleSlug eq '${slug}'`,
@@ -217,23 +256,47 @@ function createAzureSubmissionIndexer(options = {}) {
     }
   }
 
-  async function remove(value) {
+  async function remove(value, optionsForRequest = {}) {
     const slug = typeof value === 'string' ? value : value?.slug;
     if (!SLUG_PATTERN.test(slug || '')) throw new TypeError('Publication slug is invalid.');
-    const existing = await documentsForSlug(slug);
+    const existing = await documentsForSlug(slug, 'id', optionsForRequest.signal);
+    const requestWithSignal = (requestCredential, requestEndpoint, path, requestOptions = {}) => request(
+      requestCredential,
+      requestEndpoint,
+      path,
+      { ...requestOptions, signal: optionsForRequest.signal }
+    );
     const result = existing.length
       ? await applyIndexActions(
           existing.map((document) => ({ '@search.action': 'delete', id: document.id })),
-          { credential, endpoint, indexName, request, wait }
+          { credential, endpoint, indexName, request: requestWithSignal, wait }
         )
       : { deleted: 0 };
-    const remaining = await documentsForSlug(slug);
+    const remaining = await documentsForSlug(slug, 'id', optionsForRequest.signal);
     if (remaining.length) throw new Error('Published Search documents could not be removed completely.');
     return result;
   }
 
-  return {
-    async index(input) {
+  async function prepare(input, optionsForRequest = {}) {
+    const value = publicationInput(input);
+    const rawDocuments = buildDocuments({
+      slug: value.slug,
+      blobName: value.blobName,
+      etag: `embedding-${value.contentHash}`,
+      lastModified: new Date(0)
+    }, value.markdown);
+    if (!rawDocuments.length) throw new Error('Publication produced no searchable sections.');
+    const documents = await embedDocuments(rawDocuments, embeddingClient, {
+      batchSize: 1,
+      signal: optionsForRequest.signal
+    });
+    return Object.freeze({
+      contentHash: value.contentHash,
+      vectors: Object.freeze(documents.map((document) => Object.freeze(document.contentVector.slice())))
+    });
+  }
+
+  async function commit(input, prepared, optionsForRequest = {}) {
       const value = publicationInput(input);
       const publicVersion = input.etag || input.publicVersion;
       if (typeof publicVersion !== 'string' || !publicVersion) throw new TypeError('Publication ETag is required.');
@@ -243,15 +306,37 @@ function createAzureSubmissionIndexer(options = {}) {
         etag: publicVersion,
         lastModified: input.lastModified instanceof Date ? input.lastModified : new Date()
       }, value.markdown);
-      if (!rawDocuments.length) throw new Error('Publication produced no searchable sections.');
-      const documents = await embedDocuments(rawDocuments, embeddingClient, { batchSize: 1 });
-      const existing = await documentsForSlug(value.slug);
+      if (
+        !rawDocuments.length
+        || prepared?.contentHash !== value.contentHash
+        || !Array.isArray(prepared?.vectors)
+        || prepared.vectors.length !== rawDocuments.length
+      ) {
+        throw new Error('Prepared embeddings do not match the publication content.');
+      }
+      const documents = rawDocuments.map((document, index) => ({
+        ...document,
+        contentVector: prepared.vectors[index]
+      }));
+      const existing = await documentsForSlug(value.slug, 'id', optionsForRequest.signal);
       const actions = [
         ...existing.map((document) => ({ '@search.action': 'delete', id: document.id })),
         ...documents.map((document) => ({ '@search.action': 'mergeOrUpload', ...document }))
       ];
-      const result = await applyIndexActions(actions, { credential, endpoint, indexName, request, wait });
-      const verified = await documentsForSlug(value.slug, 'id,sourceEtag');
+      const requestWithSignal = (requestCredential, requestEndpoint, path, requestOptions = {}) => request(
+        requestCredential,
+        requestEndpoint,
+        path,
+        { ...requestOptions, signal: optionsForRequest.signal }
+      );
+      const result = await applyIndexActions(actions, {
+        credential,
+        endpoint,
+        indexName,
+        request: requestWithSignal,
+        wait
+      });
+      const verified = await documentsForSlug(value.slug, 'id,sourceEtag', optionsForRequest.signal);
       const expectedIds = new Set(documents.map((document) => document.id));
       if (
         verified.length !== expectedIds.size
@@ -260,6 +345,14 @@ function createAzureSubmissionIndexer(options = {}) {
         throw new Error('Published Search documents could not be verified.');
       }
       return { ...result, verified: verified.length };
+  }
+
+  return {
+    prepare,
+    commit,
+    async index(input, optionsForRequest = {}) {
+      const prepared = await prepare(input, optionsForRequest);
+      return commit(input, prepared, optionsForRequest);
     },
     remove
   };

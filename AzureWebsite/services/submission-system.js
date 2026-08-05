@@ -1,11 +1,13 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createGoogleOidc } = require('./google-oidc');
 const { createAzurePublicPublisher, createAzureSubmissionIndexer } = require('./azure-submission-publication');
 const { createCsrfProtection } = require('./submission-csrf');
 const { createPublicationCoordinator } = require('./submission-publication');
+const { createPublicationWorker } = require('./submission-publication-worker');
 const { createSubmissionQuota } = require('./submission-quota');
 const { createFileSubmissionRepository } = require('./submission-repository');
 const { createOpaqueSessionStore, sessionCookieOptions } = require('./submission-session');
@@ -97,16 +99,26 @@ function createSubmissionSystem(options = {}) {
     async index() { throw createUnavailablePublishingError(); },
     async remove() { return true; }
   });
-  const coordinator = options.publication || createPublicationCoordinator({ repository, publicStore, searchIndex });
+  const publicationLog = options.publicationLog || ((detail) => console.log(JSON.stringify({
+    event: 'submission_publication_stage',
+    ...detail
+  })));
+  const coordinator = options.publication || createPublicationCoordinator({
+    repository,
+    publicStore,
+    searchIndex,
+    observe: publicationLog
+  });
   const publication = publishingEnabled || options.publication
     ? coordinator
     : {
+        enqueue() { throw createUnavailablePublishingError(); },
         publish() { throw createUnavailablePublishingError(); },
         reject: coordinator.reject,
         remove: coordinator.remove
       };
 
-  return {
+  const system = {
     enabled: true,
     production: env.NODE_ENV === 'production',
     adminGoogleSub,
@@ -118,6 +130,35 @@ function createSubmissionSystem(options = {}) {
     sessionCookieOptions: sessionCookieOptions({ production: env.NODE_ENV === 'production' }),
     sessionStore
   };
+  system.publicationVisibility = async ({ slug, metadata } = {}) => {
+    if (typeof slug !== 'string' || metadata?.source !== 'reviewed-submission') return false;
+    const records = await repository.listAll({ includeDeleted: true });
+    const record = records.find((candidate) => candidate.publishedSlug === slug);
+    if (!record || record.status !== 'published') return false;
+    const operationHash = crypto.createHash('sha256').update(record.id).digest('hex');
+    return metadata.operationhash === operationHash;
+  };
+  if (
+    (publishingEnabled || options.publication)
+    && typeof coordinator.enqueue === 'function'
+    && typeof coordinator.process === 'function'
+  ) {
+    system.publicationWorker = options.publicationWorker || createPublicationWorker({
+      publication: coordinator,
+      repository,
+      timeoutMs: positiveEnvironmentInteger(
+        env.SUBMISSION_PUBLICATION_TIMEOUT_MS,
+        30 * 60 * 1000,
+        60 * 1000,
+        60 * 60 * 1000
+      ),
+      log: publicationLog,
+      onPublished() {
+        return system.onCorpusChanged?.();
+      }
+    });
+  }
+  return system;
 }
 
 module.exports = { createSubmissionSystem, positiveEnvironmentInteger, validatePrivateDataFile };

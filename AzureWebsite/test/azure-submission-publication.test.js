@@ -147,6 +147,48 @@ test('Azure Search removal paginates through every chunk and verifies the slug i
   assert.equal(searchRequests.at(-1).skip, 0);
 });
 
+test('Azure indexer prepares embeddings without Search writes and commits them against the public ETag', async () => {
+  const requests = [];
+  const documents = new Map();
+  const request = async (_credential, _endpoint, path, options) => {
+    const body = JSON.parse(options.body);
+    requests.push({ body, path });
+    if (path.includes('/docs/search?')) {
+      return {
+        value: [...documents.values()].map((document) => ({
+          id: document.id,
+          sourceEtag: document.sourceEtag
+        }))
+      };
+    }
+    for (const action of body.value) {
+      if (action['@search.action'] === 'delete') documents.delete(action.id);
+      else documents.set(action.id, action);
+    }
+    return { value: body.value.map((action) => ({ key: action.id, status: true, statusCode: 200 })) };
+  };
+  const indexer = createAzureSubmissionIndexer({
+    env: { AZURE_SEARCH_ENDPOINT: 'https://research.search.windows.net' },
+    credential: {},
+    embeddingClient: { async embed(values) { return values.map(() => Array(1536).fill(0.1)); } },
+    request,
+    sleep: async () => {}
+  });
+
+  const prepared = await indexer.prepare(input());
+  assert.equal(prepared.vectors.length, 1);
+  assert.equal(requests.length, 0);
+
+  const result = await indexer.commit({
+    ...input(),
+    publicVersion: 'public-etag',
+    lastModified: new Date('2026-08-04T12:00:00.000Z')
+  }, prepared);
+  assert.equal(result.verified, 1);
+  assert.equal([...documents.values()][0].sourceEtag, 'public-etag');
+  assert.equal(requests.filter((item) => item.path.includes('/docs/index?')).length, 1);
+});
+
 test('Azure publication rejects key-based configuration and invalid publication inputs', () => {
   assert.throws(
     () => createAzurePublicPublisher({ env: { AZURE_STORAGE_CONNECTION_STRING: 'secret' } }),

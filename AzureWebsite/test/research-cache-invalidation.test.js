@@ -47,3 +47,43 @@ test('cache invalidation cannot be undone by an older in-flight catalog refresh'
   assert.deepEqual(await repository.listArticles(), []);
   assert.equal(await repository.getArticle('soon-deleted'), null);
 });
+
+test('reviewed-submission blobs remain absent until the durable publication flag activates them', async () => {
+  const source = '---\ntitle: Staged note\n---\n\n# Finding\n\nEvidence.\n';
+  let visible = false;
+  let downloads = 0;
+  const containerClient = {
+    async *listBlobsFlat(options) {
+      assert.equal(options.includeMetadata, true);
+      yield {
+        name: 'staged-note.md',
+        metadata: { operationhash: 'operation-hash', source: 'reviewed-submission' },
+        properties: {
+          contentLength: Buffer.byteLength(source),
+          etag: 'staged-etag',
+          lastModified: new Date('2026-08-04T12:00:00.000Z')
+        }
+      };
+    },
+    getBlobClient() {
+      return {
+        async download() {
+          downloads += 1;
+          return { readableStreamBody: Readable.from([source]) };
+        }
+      };
+    }
+  };
+  const repository = createResearchRepository({
+    containerClient,
+    cacheTtlMs: 60_000,
+    async publicationVisibility() { return visible; }
+  });
+
+  assert.deepEqual(await repository.listArticles(), []);
+  assert.equal(downloads, 0);
+  visible = true;
+  repository.clearCache();
+  assert.deepEqual((await repository.listArticles()).map((article) => article.slug), ['staged-note']);
+  assert.equal(downloads, 1);
+});

@@ -511,6 +511,8 @@
 }
 
 .status-publishing,
+.status-embedding_pending,
+.status-embedding,
 .status-pending {
   color: var(--submission-warning);
 }
@@ -704,6 +706,29 @@
   gap: 2.5rem 5rem;
   padding: clamp(3rem, 7vw, 5rem) 0;
   border-bottom: 1px solid var(--line-strong);
+}
+
+.submission-progress {
+  margin-top: 2rem;
+  padding: 1.25rem 1.4rem;
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--submission-warning) 5%, transparent);
+}
+
+.submission-progress h2 {
+  margin: 0.35rem 0 0.5rem;
+  font-size: clamp(1.25rem, 2vw, 1.65rem);
+}
+
+.submission-progress p {
+  max-width: 62rem;
+  margin: 0;
+}
+
+.submission-progress .submission-progress-refresh {
+  margin-top: 0.6rem;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .admin-decision-intro {

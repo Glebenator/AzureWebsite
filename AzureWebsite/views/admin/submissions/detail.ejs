@@ -2,6 +2,8 @@
   var statusLabels = {
     pending: 'Pending',
     ready_for_review: 'Ready for review',
+    embedding_pending: 'Embedding pending',
+    embedding: 'Embedding',
     publishing: 'Publishing',
     published: 'Published',
     rejected: 'Rejected',
@@ -14,7 +16,8 @@
     return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
   var canReview = ['ready_for_review', 'failed'].includes(submission.status);
-  var canDelete = submission.status !== 'publishing' && submission.status !== 'deleted';
+  var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
+  var canDelete = !publicationActive && submission.status !== 'deleted';
 %>
 <!doctype html>
 <html lang="en">
@@ -72,6 +75,28 @@
       <% if (submission.status === 'rejected' && submission.rejectionReason) { %>
         <section class="submission-rejection" aria-labelledby="rejection-title"><h2 id="rejection-title">Rejection reason</h2><p><%= submission.rejectionReason %></p></section>
       <% } %>
+      <% if (publicationActive) { %>
+        <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/admin/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
+          <p class="submission-kicker">Background publication</p>
+          <h2 id="publication-progress-title"><%= statusLabels[submission.status] %></h2>
+          <% if (submission.status === 'embedding_pending') { %>
+            <p>The request is queued. The Markdown remains private while the embedding worker starts.</p>
+          <% } else if (submission.status === 'embedding') { %>
+            <p>Search vectors are being created. This can take several minutes and does not block this page.</p>
+          <% } else { %>
+            <p>Embeddings are ready. The public note and verified Search documents are now being committed.</p>
+          <% } %>
+          <p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p>
+        </section>
+      <% } %>
+      <% if (submission.status === 'failed') { %>
+        <section class="submission-rejection" aria-labelledby="publication-failure-title">
+          <h2 id="publication-failure-title">Publication paused safely</h2>
+          <p><%= submission.failureCode === 'embedding_failed'
+            ? 'Embedding did not complete, and nothing was activated publicly. Retry when the service is available.'
+            : 'The attempt failed and completed its cleanup. Retry to resume from the embedding phase.' %></p>
+        </section>
+      <% } %>
 
       <% if (submission.status !== 'deleted') { %>
         <section class="submission-review" aria-labelledby="preview-title">
@@ -88,14 +113,14 @@
           <div class="admin-decision-intro">
             <p class="submission-kicker">Server-authorized actions</p>
             <h2 id="decision-title">Review decision</h2>
-            <p>Publishing promotes the normalized Markdown to the public archive and search index. The status changes only after that operation succeeds.</p>
+            <p>Publishing queues embedding first, then commits the public archive and Search documents. The note activates only after both finish.</p>
           </div>
 
           <% if (canReview) { %>
             <form class="admin-publish-form" action="/admin/submissions/<%= submission.id %>/publish" method="post">
               <input type="hidden" name="_csrf" value="<%= csrfToken %>">
               <button class="submission-button" type="submit"><i class="ph ph-check" aria-hidden="true"></i><span>Publish submission</span></button>
-              <p>Safe to retry after a failure; the server prevents duplicate slugs and documents.</p>
+              <p>This returns immediately. Progress continues in the background and is safe to retry after a failure.</p>
             </form>
 
             <form class="submission-form admin-reject-form" action="/admin/submissions/<%= submission.id %>/reject" method="post">
@@ -119,5 +144,6 @@
         </section>
       <% } %>
     </main>
+    <script src="/javascripts/submission-publication-status.js" defer></script>
   </body>
 </html>

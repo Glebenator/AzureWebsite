@@ -3,9 +3,11 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createSubmissionSystem } = require('../services/submission-system');
+const { createInMemorySubmissionRepository } = require('../services/submission-repository');
 
 test('submission storage configuration fails closed inside the public directory', () => {
   assert.throws(() => createSubmissionSystem({
@@ -47,4 +49,36 @@ test('submission storage rejects an existing symbolic-link target', (context) =>
       SUBMISSION_DATA_FILE: linkedFile
     }
   }), /must not be a symbolic link/i);
+});
+
+test('publication visibility requires published state and the matching immutable operation hash', async () => {
+  const repository = createInMemorySubmissionRepository();
+  const system = createSubmissionSystem({
+    enabled: true,
+    adminGoogleSub: 'sole-admin-subject',
+    env: { NODE_ENV: 'development' },
+    repository
+  });
+  const record = await repository.create({
+    ownerId: 'owner',
+    markdown: '---\ntitle: Visibility note\n---\n\n# Finding\n\nEvidence.\n',
+    metadata: { title: 'Visibility note' },
+    status: 'ready_for_review'
+  });
+  await repository.reserveSlug(record.id, 'Visibility note');
+  const metadata = {
+    source: 'reviewed-submission',
+    operationhash: crypto.createHash('sha256').update(record.id).digest('hex')
+  };
+
+  assert.equal(await system.publicationVisibility({ slug: 'visibility-note', metadata }), false);
+  await repository.transition(record.id, 'embedding_pending');
+  await repository.transition(record.id, 'embedding');
+  await repository.transition(record.id, 'publishing');
+  await repository.transition(record.id, 'published');
+  assert.equal(await system.publicationVisibility({ slug: 'visibility-note', metadata }), true);
+  assert.equal(await system.publicationVisibility({
+    slug: 'visibility-note',
+    metadata: { ...metadata, operationhash: 'wrong' }
+  }), false);
 });

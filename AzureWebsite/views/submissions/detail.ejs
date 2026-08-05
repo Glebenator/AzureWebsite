@@ -2,6 +2,8 @@
   var statusLabels = {
     pending: 'Pending',
     ready_for_review: 'Ready for review',
+    embedding_pending: 'Embedding pending',
+    embedding: 'Embedding',
     publishing: 'Publishing',
     published: 'Published',
     rejected: 'Rejected',
@@ -15,6 +17,7 @@
   }
   var canEdit = ['pending', 'ready_for_review', 'rejected', 'failed'].includes(submission.status);
   var canDelete = ['pending', 'ready_for_review', 'published', 'rejected', 'failed'].includes(submission.status);
+  var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
 %>
 <!doctype html>
 <html lang="en">
@@ -79,6 +82,23 @@
       <% } else if (submission.status !== 'deleted') { %>
         <p class="submission-boundary"><i class="ph ph-lock" aria-hidden="true"></i><span>This preview is private and unavailable to public search and assistant retrieval.</span></p>
       <% } %>
+      <% if (publicationActive) { %>
+        <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/research/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
+          <p class="submission-kicker">Background publication</p>
+          <h2 id="publication-progress-title"><%= statusLabels[submission.status] %></h2>
+          <p><%= submission.status === 'embedding_pending'
+            ? 'Your approved submission is queued for embedding.'
+            : submission.status === 'embedding'
+              ? 'Search vectors are being created. Your submission is still private.'
+              : 'The public note and Search documents are being committed and verified.' %></p>
+          <p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p>
+        </section>
+      <% } %>
+      <% if (submission.status === 'failed') { %>
+        <p class="submission-notice is-error" role="status"><%= submission.failureCode === 'embedding_failed'
+          ? 'Embedding did not complete. The submission remains private while an administrator retries it.'
+          : 'Publication did not complete. The submission remains private while an administrator reviews it.' %></p>
+      <% } %>
 
       <% if (submission.status !== 'deleted') { %>
         <section class="submission-review" aria-labelledby="preview-title">
@@ -125,5 +145,6 @@
         </section>
       <% } %>
     </main>
+    <script src="/javascripts/submission-publication-status.js" defer></script>
   </body>
 </html>

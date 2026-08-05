@@ -50,9 +50,19 @@ function fixture(options = {}) {
       async remove() { return true; }
     },
     searchIndex: {
-      async index(payload) { indexed.push(payload); return { version: 'search-version' }; },
+      async prepare(payload) {
+        if (typeof options.onEmbeddingStarted === 'function') options.onEmbeddingStarted(payload);
+        if (options.embeddingGate) await options.embeddingGate;
+        return { prepared: true };
+      },
+      async commit(payload, prepared) {
+        assert.equal(prepared.prepared, true);
+        indexed.push(payload);
+        return { version: 'search-version' };
+      },
       async remove(payload) { removedFromIndex.push(payload); return true; }
-    }
+    },
+    publicationLog() {}
   });
   const researchRepository = {
     async listArticles() { return []; },
@@ -79,6 +89,7 @@ function fixture(options = {}) {
     publicWrites,
     removedFromIndex,
     repository,
+    publicationWorker: system.publicationWorker,
     cacheClears() { return cacheClears; }
   };
 }
@@ -252,6 +263,7 @@ test('owners can revise submitted work and delete private or published submissio
       status: 'ready_for_review'
     });
     await postForm(baseUrl, `/admin/submissions/${published.id}/publish`, context.auth('admin-google-sub'));
+    await context.publicationWorker.waitForIdle();
     const ownerDelete = await postForm(baseUrl, `/research/submissions/${published.id}/delete`, owner);
     assert.equal(ownerDelete.status, 303);
     assert.equal((await context.repository.get(published.id)).status, 'deleted');
@@ -260,8 +272,12 @@ test('owners can revise submitted work and delete private or published submissio
   });
 });
 
-test('only the sole admin can publish and status changes after public write and indexing', async () => {
-  const context = fixture();
+test('only the sole admin can queue publication and the request returns before embedding finishes', async () => {
+  let releaseEmbedding;
+  let signalEmbeddingStarted;
+  const embeddingGate = new Promise((resolve) => { releaseEmbedding = resolve; });
+  const embeddingStarted = new Promise((resolve) => { signalEmbeddingStarted = resolve; });
+  const context = fixture({ embeddingGate, onEmbeddingStarted: signalEmbeddingStarted });
   const owner = context.auth('owner-google-sub');
   const admin = context.auth('admin-google-sub');
   const record = await context.repository.create({
@@ -278,6 +294,30 @@ test('only the sole admin can publish and status changes after public write and 
 
     const published = await postForm(baseUrl, `/admin/submissions/${record.id}/publish`, admin);
     assert.equal(published.status, 303);
+    assert.match(published.headers.get('location'), /status=embedding_pending$/);
+    await embeddingStarted;
+    assert.equal((await context.repository.get(record.id)).status, 'embedding');
+    assert.equal(context.publicWrites.length, 0);
+    assert.equal(context.indexed.length, 0);
+    const progress = await fetch(baseUrl + `/admin/submissions/${record.id}`, {
+      headers: { Cookie: admin.cookie }
+    });
+    const progressHtml = await progress.text();
+    assert.equal(progress.status, 200);
+    assert.match(progressHtml, /Embedding<\/h2>/);
+    assert.match(progressHtml, /does not block this page/i);
+    assert.match(progressHtml, /data-publication-refresh/);
+    assert.match(progressHtml, /submission-publication-status\.js/);
+    const statusResponse = await fetch(baseUrl + `/admin/submissions/${record.id}/status`, {
+      headers: { Cookie: admin.cookie, Accept: 'application/json' }
+    });
+    assert.deepEqual(await statusResponse.json(), {
+      status: 'embedding',
+      updatedAt: (await context.repository.get(record.id)).updatedAt
+    });
+
+    releaseEmbedding();
+    await context.publicationWorker.waitForIdle();
     assert.equal(context.publicWrites.length, 1);
     assert.equal(context.indexed.length, 1);
     assert.doesNotMatch(context.publicWrites[0].markdown, /private_field|remove-me/);
@@ -288,12 +328,12 @@ test('only the sole admin can publish and status changes after public write and 
     assert.equal(retry.status, 303);
     assert.equal(context.publicWrites.length, 1);
     assert.equal(context.indexed.length, 1);
-    assert.equal(context.cacheClears(), 2);
+    assert.equal(context.cacheClears(), 1);
 
     const deleted = await postForm(baseUrl, `/admin/submissions/${record.id}/delete`, admin);
     assert.equal(deleted.status, 303);
     assert.equal(context.removedFromIndex.length, 1);
-    assert.equal(context.cacheClears(), 3);
+    assert.equal(context.cacheClears(), 2);
     assert.equal((await context.repository.get(record.id)).status, 'deleted');
   });
 });

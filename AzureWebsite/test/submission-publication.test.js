@@ -29,7 +29,13 @@ function fakeAdapters(events, options = {}) {
       }
     },
     searchIndex: {
-      async index(payload) {
+      async prepare(payload) {
+        events.push(`embedding:${payload.slug}`);
+        if (options.embeddingFails) throw new Error('embedding failed');
+        return { prepared: true };
+      },
+      async commit(payload, prepared) {
+        assert.equal(prepared.prepared, true);
         events.push(`index.write:${payload.slug}`);
         if (options.indexFailsOnce && !options.indexFailureUsed) {
           options.indexFailureUsed = true;
@@ -58,7 +64,7 @@ test('publication writes public content, indexes it, and only then marks publish
 
   const result = await coordinator.publish(ready.id);
   const stored = await repository.get(ready.id);
-  assert.deepEqual(events, ['public.write:reviewed-research', 'index.write:reviewed-research']);
+  assert.deepEqual(events, ['embedding:reviewed-research', 'public.write:reviewed-research', 'index.write:reviewed-research']);
   assert.deepEqual(result, { id: ready.id, slug: 'reviewed-research', status: 'published', idempotent: false });
   assert.equal(stored.status, 'published');
   assert.deepEqual(stored.publication, {
@@ -78,9 +84,9 @@ test('published retry is idempotent and concurrent publish requests do not dupli
   const [first, second] = await Promise.all([coordinator.publish(ready.id), coordinator.publish(ready.id)]);
   assert.equal(first.status, 'published');
   assert.equal(second.idempotent, true);
-  assert.deepEqual(events, ['public.write:reviewed-research', 'index.write:reviewed-research']);
+  assert.deepEqual(events, ['embedding:reviewed-research', 'public.write:reviewed-research', 'index.write:reviewed-research']);
   assert.equal((await coordinator.publish(ready.id)).idempotent, true);
-  assert.equal(events.length, 2);
+  assert.equal(events.length, 3);
 });
 
 test('index failure compensates index and public writes, records failed, and safely retries the same slug', async () => {
@@ -95,6 +101,7 @@ test('index failure compensates index and public writes, records failed, and saf
   assert.equal(failed.status, 'failed');
   assert.deepEqual(failed.publication, { publicWritten: false, indexed: false });
   assert.deepEqual(events, [
+    'embedding:stable-slug',
     'public.write:stable-slug',
     'index.write:stable-slug',
     'index.remove:stable-slug',
@@ -104,7 +111,7 @@ test('index failure compensates index and public writes, records failed, and saf
   const retried = await coordinator.publish(ready.id);
   assert.equal(retried.slug, 'stable-slug');
   assert.equal(retried.status, 'published');
-  assert.deepEqual(events.slice(-2), ['public.write:stable-slug', 'index.write:stable-slug']);
+  assert.deepEqual(events.slice(-3), ['embedding:stable-slug', 'public.write:stable-slug', 'index.write:stable-slug']);
 });
 
 test('incomplete compensation stays publishing and blocks deletion instead of claiming a safe failure', async () => {
@@ -123,7 +130,8 @@ test('incomplete compensation stays publishing and blocks deletion instead of cl
   options.publicRemoveFails = false;
   const retried = await coordinator.publish(ready.id);
   assert.equal(retried.status, 'published');
-  assert.deepEqual(events.slice(-2), [
+  assert.deepEqual(events.slice(-3), [
+    'embedding:reviewed-research',
     'public.write:reviewed-research',
     'index.write:reviewed-research'
   ]);
@@ -139,8 +147,31 @@ test('slug conflict never compensates public or Search content owned by another 
   });
 
   await assert.rejects(() => coordinator.publish(ready.id), { code: 'publication_failed' });
-  assert.deepEqual(events, ['public.write:existing-article']);
+  assert.deepEqual(events, ['embedding:existing-article', 'public.write:existing-article']);
   assert.equal((await repository.get(ready.id)).status, 'failed');
+});
+
+test('embedding failure remains private and retry starts again at the embedding checkpoint', async () => {
+  const events = [];
+  const options = { embeddingFails: true };
+  const repository = createInMemorySubmissionRepository();
+  const ready = await readySubmission(repository, 'Private until embedded');
+  const coordinator = createPublicationCoordinator({ repository, ...fakeAdapters(events, options) });
+
+  await assert.rejects(() => coordinator.publish(ready.id), { code: 'embedding_failed' });
+  const failed = await repository.get(ready.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.failureCode, 'embedding_failed');
+  assert.deepEqual(failed.publication, { publicWritten: false, indexed: false });
+  assert.deepEqual(events, ['embedding:private-until-embedded']);
+
+  options.embeddingFails = false;
+  assert.equal((await coordinator.publish(ready.id)).status, 'published');
+  assert.deepEqual(events.slice(-3), [
+    'embedding:private-until-embedded',
+    'public.write:private-until-embedded',
+    'index.write:private-until-embedded'
+  ]);
 });
 
 test('pending, rejected, and deleted submissions never reach public or index adapters', async () => {

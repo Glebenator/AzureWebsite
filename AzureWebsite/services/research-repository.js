@@ -533,6 +533,9 @@ function createResearchRepository(options = {}) {
   const cacheTtlMs = boundedCacheTtl(options.cacheTtlMs || process.env.RESEARCH_CACHE_TTL_MS);
   const now = options.now || Date.now;
   const renderMarkdown = options.renderMarkdown || createMarkdownRenderer();
+  const publicationVisibility = typeof options.publicationVisibility === 'function'
+    ? options.publicationVisibility
+    : null;
   let catalog = null;
   let refreshPromise = null;
   let cacheGeneration = 0;
@@ -585,10 +588,17 @@ function createResearchRepository(options = {}) {
   async function refreshCatalog(generation) {
     try {
       const entries = [];
-      for await (const blob of containerClient.listBlobsFlat()) {
+      for await (const blob of containerClient.listBlobsFlat({ includeMetadata: true })) {
         const slug = slugFromBlobName(blob.name);
         if (!slug) continue;
         if (blob.properties.contentLength && blob.properties.contentLength > MAX_BLOB_BYTES) continue;
+        const metadata = blob.metadata || blob.properties.metadata || {};
+        if (metadata.source === 'reviewed-submission') {
+          const visible = publicationVisibility
+            ? await publicationVisibility({ slug, metadata })
+            : false;
+          if (!visible) continue;
+        }
         entries.push({
           blobName: blob.name,
           slug,
