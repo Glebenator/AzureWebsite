@@ -417,7 +417,10 @@ function indexingFailure(failures) {
     return `${failure.action.id} (${failure.statusCode || 'missing status'}${message ? `: ${message}` : ''})`;
   }).join(', ');
   const remainder = failures.length > 5 ? ` and ${failures.length - 5} more` : '';
-  return new Error(`Azure AI Search rejected ${failures.length} indexing action(s): ${detail}${remainder}`);
+  const error = new Error(`Azure AI Search rejected ${failures.length} indexing action(s): ${detail}${remainder}`);
+  error.code = 'search_index_rejected';
+  error.statusCode = failures[0]?.statusCode || null;
+  return error;
 }
 
 async function submitIndexBatch({ actions, credential, endpoint, indexName, request, wait }) {

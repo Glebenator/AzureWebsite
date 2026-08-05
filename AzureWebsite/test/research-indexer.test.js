@@ -197,7 +197,12 @@ test('synchronizeIndex fails immediately for permanent per-document failures', a
 
   await assert.rejects(
     synchronizeIndex({}, ENDPOINT, INDEX_NAME, [{ id: 'bad' }], { request, sleep: async () => {} }),
-    /bad \(400: invalid field\)/
+    (error) => {
+      assert.equal(error.code, 'search_index_rejected');
+      assert.equal(error.statusCode, 400);
+      assert.match(error.message, /bad \(400: invalid field\)/);
+      return true;
+    }
   );
   assert.equal(indexingCalls, 1);
 });

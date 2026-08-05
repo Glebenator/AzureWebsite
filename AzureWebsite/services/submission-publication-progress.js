@@ -43,6 +43,7 @@ function createPublicationProgress(record, now = Date.now()) {
   const substage = typeof publication.substage === 'string' ? publication.substage : '';
   const publicWritten = Boolean(publication.publicWritten);
   const indexed = Boolean(publication.indexed);
+  const requiresAction = record?.failureCode === 'cleanup_required';
   const embeddingDone = Boolean(publication.embeddingsReadyAt)
     || (total !== null && total > 0 && completed === total)
     || (['publishing', 'published'].includes(record?.status) && substage !== 'embedding_recovery');
@@ -95,7 +96,7 @@ function createPublicationProgress(record, now = Date.now()) {
       : 'pending';
 
   return {
-    active: ACTIVE_STATES.has(record?.status),
+    active: ACTIVE_STATES.has(record?.status) && !requiresAction,
     attempt,
     completed,
     detail,
@@ -103,6 +104,7 @@ function createPublicationProgress(record, now = Date.now()) {
     startedAt,
     summary,
     total,
+    requiresAction,
     checkpoints: [
       checkpoint(
         'Embeddings',

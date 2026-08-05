@@ -191,7 +191,11 @@ async function defaultSearchRequest(credential, endpoint, path, options = {}) {
   });
   try {
     const token = await Promise.race([credential.getToken(SEARCH_SCOPE), aborted]);
-    if (!token?.token) throw new Error('Unable to obtain an Azure AI Search access token.');
+    if (!token?.token) {
+      throw Object.assign(new Error('Unable to obtain an Azure AI Search access token.'), {
+        code: 'search_authentication_failed'
+      });
+    }
     const response = await fetch(`${endpoint}${path}`, {
       ...options,
       signal: controller.signal,
@@ -201,14 +205,21 @@ async function defaultSearchRequest(credential, endpoint, path, options = {}) {
         ...(options.headers || {})
       }
     });
-    if (!response.ok) throw new Error(`Azure AI Search request failed with status ${response.status}.`);
+    if (!response.ok) {
+      throw Object.assign(new Error(`Azure AI Search request failed with status ${response.status}.`), {
+        code: `search_http_${response.status}`,
+        statusCode: response.status
+      });
+    }
     if (response.status === 204) return null;
     return response.json();
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error(timedOut
+      throw Object.assign(new Error(timedOut
         ? 'Azure AI Search request timed out.'
-        : 'Azure AI Search request was cancelled.', { cause: error });
+        : 'Azure AI Search request was cancelled.', { cause: error }), {
+        code: timedOut ? 'search_timeout' : 'search_cancelled'
+      });
     }
     throw error;
   } finally {
@@ -346,7 +357,9 @@ function createAzureSubmissionIndexer(options = {}) {
         verified.length !== expectedIds.size
         || verified.some((document) => !expectedIds.has(document.id) || document.sourceEtag !== publicVersion)
       ) {
-        throw new Error('Published Search documents could not be verified.');
+        throw Object.assign(new Error('Published Search documents could not be verified.'), {
+          code: 'search_verification_failed'
+        });
       }
       return { ...result, verified: verified.length };
   }

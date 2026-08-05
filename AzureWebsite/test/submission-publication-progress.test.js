@@ -64,6 +64,8 @@ test('cleanup and failure states remain actionable without exposing raw causes',
     substage: 'cleanup'
   }, { failureCode: 'cleanup_required' }));
   assert.equal(cleanup.summary, 'Cleanup requires a retry');
+  assert.equal(cleanup.active, false);
+  assert.equal(cleanup.requiresAction, true);
 
   const failed = createPublicationProgress(record('failed', {
     embeddingCompleted: 4,

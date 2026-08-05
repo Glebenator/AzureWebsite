@@ -81,6 +81,7 @@
                     active: false,
                     completed: null,
                     detail: '',
+                    requiresAction: false,
                     summary: '',
                     total: null
                   };
@@ -97,8 +98,8 @@
                         data-publication-status-url="/admin/submissions/<%= submission.id %>/status"
                       <% } %>
                     >
-                      <span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span>
-                      <% if (publicationProgress.active || (submission.status === 'failed' && publicationProgress.summary)) { %>
+                      <span class="submission-status status-<%= submission.status %>"><%= publicationProgress.requiresAction ? 'Cleanup required' : statusLabels[submission.status] || submission.status %></span>
+                      <% if (publicationProgress.active || publicationProgress.requiresAction || (submission.status === 'failed' && publicationProgress.summary)) { %>
                         <p data-publication-summary><%= publicationProgress.summary %></p>
                         <% if (publicationProgress.total !== null) { %>
                           <progress
