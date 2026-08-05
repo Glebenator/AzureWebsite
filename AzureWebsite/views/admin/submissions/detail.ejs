@@ -20,6 +20,13 @@
   var canReject = ['ready_for_review', 'failed'].includes(submission.status);
   var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
   var canDelete = !publicationActive && submission.status !== 'deleted';
+  var publicationProgress = submission.publicationProgress || {
+    checkpoints: [],
+    completed: null,
+    detail: 'Progress details will appear after the application update completes.',
+    summary: statusLabels[submission.status] || 'Publishing',
+    total: null
+  };
 %>
 <!doctype html>
 <html lang="en">
@@ -80,18 +87,18 @@
       <% if (publicationActive) { %>
         <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/admin/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
           <p class="submission-kicker">Background publication</p>
-          <h2 id="publication-progress-title" data-publication-summary><%= submission.publicationProgress.summary %></h2>
-          <p data-publication-detail><%= submission.publicationProgress.detail %></p>
-          <% if (submission.publicationProgress.total !== null) { %>
+          <h2 id="publication-progress-title" data-publication-summary><%= publicationProgress.summary %></h2>
+          <p data-publication-detail><%= publicationProgress.detail %></p>
+          <% if (publicationProgress.total !== null) { %>
             <progress
               data-publication-meter
-              max="<%= submission.publicationProgress.total %>"
-              value="<%= submission.publicationProgress.completed || 0 %>"
+              max="<%= publicationProgress.total %>"
+              value="<%= publicationProgress.completed || 0 %>"
               aria-label="Embedding progress"
-            ><%= submission.publicationProgress.completed || 0 %> of <%= submission.publicationProgress.total %></progress>
+            ><%= publicationProgress.completed || 0 %> of <%= publicationProgress.total %></progress>
           <% } %>
           <ol class="publication-checkpoints" aria-label="Publication checkpoints">
-            <% submission.publicationProgress.checkpoints.forEach(function(checkpoint) { %>
+            <% publicationProgress.checkpoints.forEach(function(checkpoint) { %>
               <li class="checkpoint-<%= checkpoint.status %>">
                 <i class="ph <%= checkpoint.status === 'complete' ? 'ph-check-circle' : checkpoint.status === 'active' ? 'ph-circle-notch' : checkpoint.status === 'failed' ? 'ph-warning-circle' : 'ph-circle' %>" aria-hidden="true"></i>
                 <span><strong><%= checkpoint.label %></strong><small><%= checkpoint.detail %></small></span>
