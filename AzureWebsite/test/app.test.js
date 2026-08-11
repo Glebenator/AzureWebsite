@@ -318,6 +318,28 @@ test('research citation callouts link to matching numbered references', () => {
   assert.match(escapedListHtml, /<li id="reference-2" class="research-reference">/);
 });
 
+test('research renderer repairs blockquoted reference exports and attached citation markers', () => {
+  const rendered = createMarkdownRenderer()([
+    'CO2 remains chemical notation, while the cited land transformation1. A PM2.5 measurement remains a decimal.',
+    'A second supported claim about fossil-fuel-derived ingredients2.',
+    '',
+    '#### **Works cited**',
+    '',
+    '> 1. First exported source, [https://example.com/one](https://example.com/one)',
+    '> 2. Second exported source, [https://example.com/two](https://example.com/two)'
+  ].join('\n'));
+  const html = rendered.html;
+
+  assert.equal(rendered.citationCount, 2);
+  assert.match(html, /transformation<a href="#reference-1"[^>]*class="research-citation"/);
+  assert.match(html, /ingredients<a href="#reference-2"[^>]*class="research-citation"/);
+  assert.match(html, /CO2 remains chemical notation/);
+  assert.match(html, /PM2\.5 measurement remains a decimal/);
+  assert.doesNotMatch(html, /<blockquote>\s*<ol>/);
+  assert.match(html, /<li id="reference-1" class="research-reference">/);
+  assert.match(html, /href="https:\/\/example\.com\/one" rel="noopener noreferrer" target="_blank"/);
+});
+
 test('research renderer creates stable TOC entries and duplicate-safe heading permalinks', () => {
   const rendered = createMarkdownRenderer()([
     '# Main Finding',

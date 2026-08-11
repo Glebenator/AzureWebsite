@@ -121,10 +121,15 @@ function normalizeReferenceList(markdownSource) {
   const headingIndex = lines.findIndex((line) => bibliographyHeading.test(line.trim()));
   if (headingIndex === -1) return markdownSource;
 
-  const bibliography = lines.slice(headingIndex + 1).join('\n').replace(
-    /(^|[ \t]+)([1-9]\d{0,2})\\\.\s+/gm,
-    (match, prefix, referenceNumber) => `${prefix ? '\n' : ''}${referenceNumber}. `
-  );
+  const bibliography = lines.slice(headingIndex + 1).join('\n')
+    // Google/LLM Markdown exports commonly wrap every numbered source in a
+    // blockquote. Convert only numbered bibliography lines so Markdown-It can
+    // build the ordered reference list used by citation links and backlinks.
+    .replace(/^\s*>\s*([1-9]\d{0,2})\\?\.\s+/gm, '$1. ')
+    .replace(
+      /(^|[ \t]+)([1-9]\d{0,2})\\\.\s+/gm,
+      (match, prefix, referenceNumber) => `${prefix ? '\n' : ''}${referenceNumber}. `
+    );
   return [...lines.slice(0, headingIndex + 1), bibliography].join('\n');
 }
 
@@ -206,7 +211,7 @@ function createCitationTokens(state, referenceNumber, counters, referenceDetails
 }
 
 function linkCitationText(state, content, referenceDetails, counters) {
-  const pattern = /\[([1-9]\d{0,2}(?:\s*[,–-]\s*[1-9]\d{0,2})*)\]|([.,;:!?)\]’”])([1-9]\d{0,2})(?=$|[\s.,;:)\]’”])/g;
+  const pattern = /\[([1-9]\d{0,2}(?:\s*[,–-]\s*[1-9]\d{0,2})*)\]|([.,;:!?)\]’”])([1-9]\d{0,2})(?=$|[\s.,;:)\]’”])|(\p{Ll})([1-9]\d{0,2})(?=$|[.,;:!?)\]’”])/gu;
   const tokens = [];
   let cursor = 0;
   let match;
@@ -222,12 +227,17 @@ function linkCitationText(state, content, referenceDetails, counters) {
     const bracketed = match[1];
     const punctuation = match[2];
     const singleReference = match[3] ? Number.parseInt(match[3], 10) : null;
+    const attachedPrefix = match[4];
+    const attachedReference = match[5] ? Number.parseInt(match[5], 10) : null;
     const decimalLike = punctuation === '.' && /\d/.test(content.charAt(match.index - 1));
+    const attachedDecimalLike = attachedPrefix
+      && content.charAt(pattern.lastIndex) === '.'
+      && /\d/.test(content.charAt(pattern.lastIndex + 1));
     const hasLinkedReference = bracketed
       ? bracketed.split(/\s*[,–-]\s*/).some((value) => referenceDetails.has(Number.parseInt(value, 10)))
-      : referenceDetails.has(singleReference);
+      : referenceDetails.has(singleReference || attachedReference);
 
-    if (decimalLike || !hasLinkedReference) continue;
+    if (decimalLike || attachedDecimalLike || !hasLinkedReference) continue;
 
     pushText(content.slice(cursor, match.index));
     if (bracketed) {
@@ -246,6 +256,9 @@ function linkCitationText(state, content, referenceDetails, counters) {
         }
       }
       pushText(']');
+    } else if (attachedReference) {
+      pushText(attachedPrefix);
+      tokens.push(...createCitationTokens(state, attachedReference, counters, referenceDetails));
     } else {
       pushText(punctuation);
       tokens.push(...createCitationTokens(state, singleReference, counters, referenceDetails));
