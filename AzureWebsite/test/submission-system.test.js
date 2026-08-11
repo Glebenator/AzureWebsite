@@ -51,7 +51,7 @@ test('submission storage rejects an existing symbolic-link target', (context) =>
   }), /must not be a symbolic link/i);
 });
 
-test('publication visibility requires published state and the matching immutable operation hash', async () => {
+test('public visibility and assistant evidence readiness are independently gated', async () => {
   const repository = createInMemorySubmissionRepository();
   const system = createSubmissionSystem({
     enabled: true,
@@ -72,11 +72,18 @@ test('publication visibility requires published state and the matching immutable
   };
 
   assert.equal(await system.publicationVisibility({ slug: 'visibility-note', metadata }), false);
-  await repository.transition(record.id, 'embedding_pending');
-  await repository.transition(record.id, 'embedding');
-  await repository.transition(record.id, 'publishing');
-  await repository.transition(record.id, 'published');
+  await repository.transition(record.id, 'publishing', {
+    publication: { status: 'writing', indexingStatus: 'pending', publicWritten: false, indexed: false }
+  });
+  await repository.transition(record.id, 'published', {
+    publication: { status: 'published', indexingStatus: 'pending', publicWritten: true, indexed: false }
+  });
   assert.equal(await system.publicationVisibility({ slug: 'visibility-note', metadata }), true);
+  assert.equal(await system.aiVisibility({ slug: 'visibility-note' }), false);
+  await repository.patch(record.id, {
+    publication: { status: 'published', indexingStatus: 'ready', publicWritten: true, indexed: true }
+  }, { requiredStatus: 'published' });
+  assert.equal(await system.aiVisibility({ slug: 'visibility-note' }), true);
   assert.equal(await system.publicationVisibility({
     slug: 'visibility-note',
     metadata: { ...metadata, operationhash: 'wrong' }

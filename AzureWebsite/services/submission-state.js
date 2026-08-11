@@ -14,13 +14,15 @@ const SUBMISSION_STATES = Object.freeze([
 
 const TRANSITIONS = new Map([
   ['pending', new Set(['ready_for_review', 'deleted'])],
-  ['ready_for_review', new Set(['pending', 'embedding_pending', 'rejected', 'deleted'])],
-  ['embedding_pending', new Set(['embedding', 'failed'])],
-  ['embedding', new Set(['publishing', 'failed'])],
-  ['publishing', new Set(['published', 'failed'])],
+  ['ready_for_review', new Set(['pending', 'publishing', 'embedding_pending', 'rejected', 'deleted'])],
+  // The embedding states remain readable for version-1 records. New approvals
+  // take the public-write path first and do not enter these legacy states.
+  ['embedding_pending', new Set(['embedding', 'publishing', 'failed', 'deleted'])],
+  ['embedding', new Set(['publishing', 'failed', 'deleted'])],
+  ['publishing', new Set(['published', 'failed', 'deleted'])],
   ['published', new Set(['deleted'])],
   ['rejected', new Set(['pending', 'deleted'])],
-  ['failed', new Set(['pending', 'embedding_pending', 'rejected', 'deleted'])],
+  ['failed', new Set(['pending', 'publishing', 'embedding_pending', 'rejected', 'deleted'])],
   ['deleted', new Set()]
 ]);
 

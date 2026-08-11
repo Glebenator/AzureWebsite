@@ -1,7 +1,5 @@
 'use strict';
 
-const ACTIVE_STATES = new Set(['embedding_pending', 'embedding', 'publishing']);
-
 function boundedCount(value) {
   const count = Number(value);
   return Number.isInteger(count) && count >= 0 && count <= 10000 ? count : null;
@@ -36,84 +34,71 @@ function createPublicationProgress(record, now = Date.now()) {
   const total = boundedCount(publication.embeddingTotal);
   const attempt = Math.max(1, boundedCount(publication.attempt) || 1);
   const startedAt = safeTimestamp(
-    publication.embeddingStartedAt || publication.queuedAt || record?.updatedAt
+    publication.indexingStartedAt || publication.queuedAt || publication.publicWriteStartedAt || record?.updatedAt
   );
   const lastProgressAt = safeTimestamp(publication.lastProgressAt || record?.updatedAt);
   const elapsed = elapsedLabel(startedAt, now);
-  const substage = typeof publication.substage === 'string' ? publication.substage : '';
-  const publicWritten = Boolean(publication.publicWritten);
-  const indexed = Boolean(publication.indexed);
-  const requiresAction = record?.failureCode === 'cleanup_required';
-  const embeddingDone = Boolean(publication.embeddingsReadyAt)
-    || (total !== null && total > 0 && completed === total)
-    || (['publishing', 'published'].includes(record?.status) && substage !== 'embedding_recovery');
+  const publicationState = publication.status || (record?.status === 'published' ? 'published' : 'private');
+  const aiState = publication.indexingStatus || (publication.indexed ? 'ready' : 'not_started');
+  const publicAvailable = record?.status === 'published'
+    && publicationState === 'published'
+    && Boolean(publication.publicWritten);
+  const aiReady = publicAvailable && aiState === 'ready' && Boolean(publication.indexed);
+  const requiresAction = publicationState === 'failed' || aiState === 'failed';
+  const active = !requiresAction
+    && (record?.status === 'publishing' || (publicAvailable && ['pending', 'indexing'].includes(aiState)));
 
-  let summary = 'Publication status unavailable';
-  let detail = `Attempt ${attempt}${elapsed ? ` · ${elapsed}` : ''}`;
-  if (record?.status === 'embedding_pending') {
-    summary = 'Waiting for the embedding worker';
-  } else if (record?.status === 'embedding' || substage === 'embedding_recovery') {
-    summary = total !== null && completed !== null
-      ? `Embedding ${completed} of ${total} sections`
-      : substage === 'embedding_recovery'
-        ? 'Restoring embeddings after restart'
-        : 'Preparing sections for embedding';
-  } else if (record?.status === 'publishing') {
-    if (record.failureCode === 'cleanup_required') summary = 'Cleanup requires a retry';
-    else if (substage === 'cleanup') summary = 'Cleaning up a partial publication';
-    else if (!publicWritten) summary = 'Writing the public Markdown note';
-    else if (!indexed) summary = 'Updating and verifying Search';
-    else summary = 'Activating the published note';
-  } else if (record?.status === 'published') {
-    summary = 'Published and available to readers';
-  } else if (record?.status === 'failed') {
-    summary = record.failureCode === 'embedding_failed'
-      ? 'Embedding stopped safely'
-      : 'Publication stopped safely';
-  }
+  let publicationLabel = 'Private';
+  if (publicationState === 'failed') publicationLabel = 'Publication failed';
+  else if (record?.status === 'publishing') publicationLabel = 'Publishing public Markdown';
+  else if (publicAvailable) publicationLabel = 'Published';
 
-  const embeddingStatus = embeddingDone
-    ? 'complete'
-    : record?.status === 'embedding' || substage === 'embedding_recovery'
-      ? 'active'
-      : record?.failureCode === 'embedding_failed'
-        ? 'failed'
-        : 'pending';
-  const archiveStatus = publicWritten
-    ? 'complete'
-    : record?.status === 'publishing' && !['cleanup', 'embedding_recovery'].includes(substage)
-      ? 'active'
-      : 'pending';
-  const searchStatus = indexed
-    ? 'complete'
-    : publicWritten && record?.status === 'publishing'
-      ? 'active'
-      : 'pending';
-  const visibilityStatus = record?.status === 'published'
-    ? 'complete'
-    : indexed && record?.status === 'publishing'
-      ? 'active'
-      : 'pending';
+  let aiLabel = 'AI indexing not started';
+  if (aiState === 'pending') aiLabel = 'Embeddings pending';
+  else if (aiState === 'indexing' && publication.substage === 'search_commit') aiLabel = 'Search indexing';
+  else if (aiState === 'indexing') aiLabel = total !== null && completed !== null
+    ? `Embedding ${completed} of ${total} sections`
+    : 'Embeddings indexing';
+  else if (aiReady) aiLabel = 'AI ready';
+  else if (aiState === 'failed') aiLabel = 'AI indexing failed';
+
+  const summary = publicAvailable ? `${publicationLabel} · ${aiLabel}` : publicationLabel;
+  const detail = `Attempt ${attempt}${elapsed ? ` · ${elapsed}` : ''}`;
+  const embeddingComplete = aiReady || Boolean(publication.embeddingsReadyAt);
 
   return {
-    active: ACTIVE_STATES.has(record?.status) && !requiresAction,
+    active,
+    aiReady,
+    aiState,
+    aiLabel,
     attempt,
     completed,
     detail,
     lastProgressAt,
+    publicationLabel,
+    publicationState,
+    publicAvailable,
+    requiresAction,
     startedAt,
     summary,
     total,
-    requiresAction,
     checkpoints: [
       checkpoint(
-        'Embeddings',
-        embeddingStatus,
-        total !== null && completed !== null ? `${completed} of ${total} sections` : 'Section count pending'
+        'Public Markdown',
+        publicAvailable ? 'complete' : publicationState === 'failed' ? 'failed' : record?.status === 'publishing' ? 'active' : 'pending',
+        publicAvailable ? 'Verified Blob is readable' : 'Not publicly active'
       ),
-      checkpoint('Public Markdown', archiveStatus, publicWritten ? 'Blob write confirmed' : 'Not written'),
-      checkpoint('Search index', searchStatus, indexed ? 'Documents verified' : 'Not verified'),
-      checkpoint('Visibility', visibilityStatus, record?.status === 'published' ? 'Active' : 'Private')
+      checkpoint('Public visibility', publicAvailable ? 'complete' : 'pending', publicAvailable ? 'Active' : 'Private'),
+      checkpoint(
+        'Embeddings',
+        embeddingComplete ? 'complete' : aiState === 'indexing' ? 'active' : aiState === 'failed' ? 'failed' : 'pending',
+        total !== null && completed !== null ? `${completed} of ${total} sections` : aiState === 'failed' ? 'Retry available' : 'Section count pending'
+      ),
+      checkpoint(
+        'Search index',
+        aiReady ? 'complete' : aiState === 'indexing' && publication.substage === 'search_commit' ? 'active' : aiState === 'failed' ? 'failed' : 'pending',
+        aiReady ? 'Documents completely verified' : aiState === 'failed' ? 'Not AI-visible; retry available' : 'Not AI-visible'
+      )
     ]
   };
 }

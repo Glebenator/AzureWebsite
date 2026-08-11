@@ -47,7 +47,17 @@ function fixture(options = {}) {
     },
     publicStore: {
       async write(payload) { publicWrites.push(payload); return { etag: 'public-etag' }; },
-      async remove() { return true; }
+      async verify(payload) {
+        return publicWrites.some((item) => item.slug === payload.slug) ? { etag: 'public-etag' } : null;
+      },
+      async verifyOwnership(payload) {
+        return publicWrites.some((item) => item.slug === payload.slug) ? { etag: 'public-etag' } : null;
+      },
+      async remove(payload) {
+        const index = publicWrites.findIndex((item) => item.slug === payload.slug);
+        if (index !== -1) publicWrites.splice(index, 1);
+        return index !== -1;
+      }
     },
     searchIndex: {
       async prepare(payload, progress = {}) {
@@ -67,8 +77,34 @@ function fixture(options = {}) {
     publicationLog() {}
   });
   const researchRepository = {
-    async listArticles() { return []; },
-    async getArticle() { return null; },
+    async listArticles() {
+      return publicWrites.map((item) => ({
+        slug: item.slug,
+        title: item.metadata.title,
+        excerpt: 'Reviewed submission.',
+        topic: { key: 'other', label: 'Other' },
+        createdAt: '2026-08-04T12:00:00.000Z',
+        modifiedAt: '2026-08-04T12:00:00.000Z',
+        readingMinutes: 1
+      }));
+    },
+    async getArticle(slug) {
+      const item = publicWrites.find((candidate) => candidate.slug === slug);
+      if (!item) return null;
+      return {
+        slug: item.slug,
+        title: item.metadata.title,
+        excerpt: 'Reviewed submission.',
+        topic: { key: 'other', label: 'Other' },
+        createdAt: '2026-08-04T12:00:00.000Z',
+        modifiedAt: '2026-08-04T12:00:00.000Z',
+        readingMinutes: 1,
+        citationCount: 0,
+        html: '<h2 id="finding">Finding</h2><p>Evidence.</p>',
+        sourceUrl: null,
+        toc: [{ id: 'finding', label: 'Finding', level: 2 }]
+      };
+    },
     clearCache() { cacheClears += 1; }
   };
   const application = appModule.createApp({
@@ -274,7 +310,7 @@ test('owners can revise submitted work and delete private or published submissio
   });
 });
 
-test('only the sole admin can queue publication and the request returns before embedding finishes', async () => {
+test('admin approval makes the note public before background embedding finishes', async () => {
   let releaseEmbedding;
   let signalEmbeddingStarted;
   const embeddingGate = new Promise((resolve) => { releaseEmbedding = resolve; });
@@ -296,21 +332,28 @@ test('only the sole admin can queue publication and the request returns before e
 
     const published = await postForm(baseUrl, `/admin/submissions/${record.id}/publish`, admin);
     assert.equal(published.status, 303);
-    assert.match(published.headers.get('location'), /status=embedding_pending$/);
+    assert.match(published.headers.get('location'), /status=published$/);
+    assert.equal(context.publicWrites.length, 1);
+    assert.equal((await context.repository.get(record.id)).status, 'published');
     await embeddingStarted;
-    assert.equal((await context.repository.get(record.id)).status, 'embedding');
-    assert.equal(context.publicWrites.length, 0);
+    assert.equal((await context.repository.get(record.id)).publication.indexingStatus, 'indexing');
     assert.equal(context.indexed.length, 0);
+    const publicListing = await fetch(baseUrl + '/research');
+    assert.equal(publicListing.status, 200);
+    assert.match(await publicListing.text(), /Publish me/);
+    const publicArticle = await fetch(baseUrl + '/research/publish-me');
+    assert.equal(publicArticle.status, 200);
+    assert.match(await publicArticle.text(), /Finding/);
     const progress = await fetch(baseUrl + `/admin/submissions/${record.id}`, {
       headers: { Cookie: admin.cookie }
     });
     const progressHtml = await progress.text();
     assert.equal(progress.status, 200);
-    assert.match(progressHtml, /Embedding 0 of 3 sections<\/h2>/);
+    assert.match(progressHtml, /Published · Embedding 0 of 3 sections<\/h2>/);
     assert.match(progressHtml, /0 of 3 sections/);
     assert.match(progressHtml, /Public Markdown/);
     assert.match(progressHtml, /Search index/);
-    assert.match(progressHtml, /Visibility/);
+    assert.match(progressHtml, /Public visibility/);
     assert.match(progressHtml, /data-publication-refresh/);
     assert.match(progressHtml, /submission-publication-status\.js/);
     const queue = await fetch(baseUrl + '/admin/submissions', {
@@ -324,9 +367,11 @@ test('only the sole admin can queue publication and the request returns before e
       headers: { Cookie: admin.cookie, Accept: 'application/json' }
     });
     const statusPayload = await statusResponse.json();
-    assert.equal(statusPayload.status, 'embedding');
+    assert.equal(statusPayload.status, 'published');
+    assert.equal(statusPayload.publicationStatus, 'published');
+    assert.equal(statusPayload.indexingStatus, 'indexing');
     assert.equal(statusPayload.updatedAt, (await context.repository.get(record.id)).updatedAt);
-    assert.equal(statusPayload.progress.summary, 'Embedding 0 of 3 sections');
+    assert.equal(statusPayload.progress.summary, 'Published · Embedding 0 of 3 sections');
     assert.equal(statusPayload.progress.completed, 0);
     assert.equal(statusPayload.progress.total, 3);
 

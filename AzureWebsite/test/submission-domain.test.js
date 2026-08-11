@@ -24,7 +24,7 @@ test('state machine exposes only the reviewed publication path', () => {
   assert.equal(canTransition('pending', 'ready_for_review'), true);
   assert.equal(canTransition('pending', 'publishing'), false);
   assert.equal(canTransition('ready_for_review', 'pending'), true);
-  assert.equal(canTransition('ready_for_review', 'embedding_pending'), true);
+  assert.equal(canTransition('ready_for_review', 'publishing'), true);
   assert.equal(canTransition('ready_for_review', 'embedding'), false);
   assert.equal(canTransition('embedding_pending', 'embedding'), true);
   assert.equal(canTransition('embedding', 'publishing'), true);
@@ -32,6 +32,40 @@ test('state machine exposes only the reviewed publication path', () => {
   assert.equal(canTransition('rejected', 'pending'), true);
   assert.equal(canTransition('failed', 'embedding_pending'), true);
   assert.equal(canTransition('published', 'pending'), false);
+});
+
+test('version-1 records migrate publication and AI readiness independently', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'submission-migration-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const filePath = path.join(directory, 'submissions.json');
+  const id = 'abcdefghijklmnopqrstuvwx';
+  await fs.writeFile(filePath, JSON.stringify({
+    version: 1,
+    slugReservations: { 'recovery-note': id },
+    records: {
+      [id]: {
+        id,
+        ownerId: 'owner',
+        status: 'publishing',
+        markdown: '---\ntitle: Recovery note\n---\n# Finding\nEvidence.\n',
+        metadata: { title: 'Recovery note' },
+        revision: 1,
+        createdAt: '2026-07-31T00:00:00.000Z',
+        updatedAt: '2026-07-31T00:01:00.000Z',
+        publishedSlug: 'recovery-note',
+        rejectionReason: null,
+        failureCode: 'cleanup_required',
+        publication: { publicWritten: true, indexed: false }
+      }
+    }
+  }), { mode: 0o600 });
+
+  const repository = createFileSubmissionRepository({ filePath });
+  const migrated = await repository.get(id);
+  assert.equal(migrated.status, 'publishing');
+  assert.equal(migrated.publication.status, 'verifying');
+  assert.equal(migrated.publication.indexingStatus, 'failed');
+  assert.equal(migrated.publication.publicWritten, true);
 });
 
 test('repository generates opaque IDs, isolates owners, and safely returns revisions to draft', async () => {

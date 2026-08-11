@@ -536,6 +536,9 @@ function createResearchRepository(options = {}) {
   const publicationVisibility = typeof options.publicationVisibility === 'function'
     ? options.publicationVisibility
     : null;
+  const assistantEvidenceVisibility = typeof options.assistantEvidenceVisibility === 'function'
+    ? options.assistantEvidenceVisibility
+    : null;
   let catalog = null;
   let refreshPromise = null;
   let cacheGeneration = 0;
@@ -603,7 +606,8 @@ function createResearchRepository(options = {}) {
           blobName: blob.name,
           slug,
           etag: blob.properties.etag || null,
-          lastModified: blob.properties.lastModified || null
+          lastModified: blob.properties.lastModified || null,
+          reviewedSubmission: metadata.source === 'reviewed-submission'
         });
       }
 
@@ -687,10 +691,14 @@ function createResearchRepository(options = {}) {
       ) {
         return null;
       }
-
       const currentCatalog = await getCatalog();
       const entry = currentCatalog.bySlug.get(articleSlug);
       if (!entry || !entry.etag || entry.etag !== sourceEtag) return null;
+      if (
+        entry.reviewedSubmission
+        && assistantEvidenceVisibility
+        && !await assistantEvidenceVisibility({ slug: articleSlug })
+      ) return null;
       const generation = cacheGeneration;
 
       try {

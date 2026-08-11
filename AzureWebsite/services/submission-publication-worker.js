@@ -1,6 +1,16 @@
 'use strict';
 
-const ACTIVE_STATES = new Set(['embedding_pending', 'embedding', 'publishing']);
+const LEGACY_ACTIVE_STATES = new Set(['embedding_pending', 'embedding', 'publishing']);
+
+function needsIndexing(record) {
+  return record?.status === 'published'
+    && ['pending', 'indexing'].includes(record?.publication?.indexingStatus);
+}
+
+function safeCategory(error) {
+  const category = String(error?.code || error?.name || 'error');
+  return /^[A-Za-z0-9_]{1,64}$/.test(category) ? category : 'error';
+}
 
 function createPublicationWorker({
   publication,
@@ -39,12 +49,9 @@ function createPublicationWorker({
     if (typeof timer.unref === 'function') timer.unref();
     try {
       const result = await publication.process(id, { signal: controller.signal });
-      if (result?.status === 'published' && !result.idempotent) {
-        try { await onPublished(); } catch {}
-      }
-      safeLog({ status: result?.status === 'published' ? 'completed' : 'skipped' });
+      safeLog({ status: result?.indexingStatus === 'ready' ? 'completed' : 'skipped' });
     } catch (error) {
-      safeLog({ category: error?.code || error?.name || 'error', status: 'failed' });
+      safeLog({ category: safeCategory(error), status: 'failed' });
     } finally {
       clearTimeout(timer);
     }
@@ -76,7 +83,10 @@ function createPublicationWorker({
   return {
     async enqueue(id) {
       const result = await publication.enqueue(id);
-      if (ACTIVE_STATES.has(result.status)) {
+      if (result?.activated) {
+        try { await onPublished(); } catch {}
+      }
+      if (result?.status === 'published' && result?.indexingStatus !== 'ready') {
         queue.add(id);
         trigger();
       }
@@ -85,7 +95,18 @@ function createPublicationWorker({
 
     async start() {
       const records = await repository.listAll();
-      records.filter((record) => ACTIVE_STATES.has(record.status)).forEach((record) => queue.add(record.id));
+      for (const record of records) {
+        if (!LEGACY_ACTIVE_STATES.has(record.status) && !needsIndexing(record)) continue;
+        try {
+          const result = await publication.enqueue(record.id);
+          if (result?.activated) {
+            try { await onPublished(); } catch {}
+          }
+          if (result?.status === 'published' && result?.indexingStatus !== 'ready') queue.add(record.id);
+        } catch (error) {
+          safeLog({ category: safeCategory(error), status: 'recovery_failed' });
+        }
+      }
       if (queue.size) trigger();
     },
 
@@ -96,4 +117,4 @@ function createPublicationWorker({
   };
 }
 
-module.exports = { ACTIVE_STATES, createPublicationWorker };
+module.exports = { LEGACY_ACTIVE_STATES, createPublicationWorker, needsIndexing };

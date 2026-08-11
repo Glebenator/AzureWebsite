@@ -28,7 +28,8 @@ function createApp(options) {
   var researchRepository = options && options.researchRepository
     ? options.researchRepository
     : createResearchRepository({
-        publicationVisibility: submissionSystem && submissionSystem.publicationVisibility
+        publicationVisibility: submissionSystem && submissionSystem.publicationVisibility,
+        assistantEvidenceVisibility: submissionSystem && submissionSystem.aiVisibility
       });
   var researchAssistant;
   if (options && options.researchAssistant) {

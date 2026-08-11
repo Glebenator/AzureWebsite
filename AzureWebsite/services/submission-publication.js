@@ -39,6 +39,19 @@ function timestamp() {
   return new Date().toISOString();
 }
 
+function indexingFailureCode(error) {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  if (/^embedding_[a-z0-9_]+$/.test(code) || /^search_(?:[a-z0-9_]+|http_[1-5][0-9]{2})$/.test(code)) {
+    return code;
+  }
+  return 'indexing_failed';
+}
+
+function safeTelemetryCategory(error) {
+  const category = String(error?.code || error?.name || 'error');
+  return /^[A-Za-z0-9_]{1,64}$/.test(category) ? category : 'error';
+}
+
 function createPublicationCoordinator({
   repository,
   publicStore,
@@ -49,7 +62,7 @@ function createPublicationCoordinator({
   if (!repository || ['get', 'transition', 'patch', 'reserveSlug'].some((method) => typeof repository[method] !== 'function')) {
     throw new TypeError('A submission repository is required.');
   }
-  requireAdapter(publicStore, ['write', 'remove'], 'publicStore');
+  requireAdapter(publicStore, ['write', 'verify', 'verifyOwnership', 'remove'], 'publicStore');
   if (
     !searchIndex
     || typeof searchIndex.remove !== 'function'
@@ -70,16 +83,6 @@ function createPublicationCoordinator({
     });
   }
 
-  async function compensate(payload, { indexMayExist, publicMayExist }) {
-    const indexResult = !indexMayExist || await Promise.resolve()
-      .then(() => searchIndex.remove(payload))
-      .then(() => true, () => false);
-    const publicResult = !publicMayExist || await Promise.resolve()
-      .then(() => publicStore.remove(payload))
-      .then(() => true, () => false);
-    return indexResult && publicResult;
-  }
-
   async function stage(name, operation) {
     const startedAt = Date.now();
     try {
@@ -87,87 +90,184 @@ function createPublicationCoordinator({
       try { observe({ durationMs: Date.now() - startedAt, stage: name, status: 'completed' }); } catch {}
       return result;
     } catch (error) {
-      try { observe({ category: error?.code || error?.name || 'error', durationMs: Date.now() - startedAt, stage: name, status: 'failed' }); } catch {}
+      try { observe({ category: safeTelemetryCategory(error), durationMs: Date.now() - startedAt, stage: name, status: 'failed' }); } catch {}
       throw error;
     }
   }
 
-  async function enqueueUnlocked(id) {
-    const record = await repository.get(id);
+  async function publishPublicUnlocked(id, options = {}) {
+    let record = await repository.get(id);
     if (!record) throw new SubmissionPublicationError('not_found', 'Submission not found.', 404);
-    if (record.status === 'published') {
-      return { id: record.id, slug: record.publishedSlug, status: record.status, idempotent: true };
+    const alreadyPublic = record.status === 'published'
+      && record.publication?.status === 'published'
+      && record.publication?.publicWritten;
+    if (alreadyPublic) {
+      return { record, slug: record.publishedSlug, idempotent: true, activated: false };
     }
-    if (['embedding_pending', 'embedding', 'publishing'].includes(record.status)) {
-      return { id: record.id, slug: record.publishedSlug, status: record.status, idempotent: true };
-    }
-    if (!['ready_for_review', 'failed'].includes(record.status)) {
+    if (!['ready_for_review', 'failed', 'publishing', 'embedding_pending', 'embedding'].includes(record.status)) {
       throw new SubmissionPublicationError('not_publishable', 'This submission is not ready to publish.', 409);
     }
-    const queuedAt = timestamp();
-    const queued = await repository.transition(record.id, 'embedding_pending', {
+
+    // Normalization and a deterministic collision-safe slug are completed
+    // before any public mutation. Legacy embedding states are accepted here so
+    // version-1 approvals resume under the new public-first ordering.
+    const normalized = normalize(record);
+    const slug = await repository.reserveSlug(record.id, normalized.title);
+    const payload = publicPayload(record, slug, () => normalized);
+    const writingAt = timestamp();
+    const patch = {
       failureCode: null,
-      publication: {
-        attempt: Math.max(0, Number(record.publication?.attempt) || 0) + 1,
-        embeddingCompleted: 0,
-        embeddingTotal: null,
-        indexed: false,
-        lastProgressAt: queuedAt,
-        publicWritten: false,
-        queuedAt,
-        substage: 'queued'
+      publication: publicationCheckpoint(record, {
+        status: 'writing',
+        indexingStatus: record.publication?.indexingStatus === 'ready' ? 'ready' : 'pending',
+        indexingFailureCode: null,
+        lastProgressAt: writingAt,
+        publicWriteStartedAt: writingAt,
+        substage: 'public_write'
+      })
+    };
+    if (record.status === 'publishing') {
+      record = await repository.patch(record.id, patch, { requiredStatus: 'publishing' });
+    } else {
+      record = await repository.transition(record.id, 'publishing', patch);
+    }
+
+    try {
+      // Read the deterministic identity first on every attempt. This covers a
+      // crash after Azure accepted and verified the Blob but before the local
+      // visibility transition became durable, without issuing another write.
+      let publicResult = await stage('public_verify', () => publicStore.verify(payload, { signal: options.signal }));
+      if (!publicResult) {
+        publicResult = await stage('public_write', () => publicStore.write(payload, { signal: options.signal }));
       }
-    });
-    return { id: queued.id, slug: queued.publishedSlug, status: queued.status, idempotent: false };
+      if (!publicResult || !(publicResult.etag || publicResult.version)) {
+        throw new Error('The public Markdown write could not be verified.');
+      }
+      const activatedAt = timestamp();
+      const published = await repository.transition(record.id, 'published', {
+        failureCode: null,
+        publication: publicationCheckpoint(record, {
+          activatedAt,
+          indexingStatus: record.publication?.indexingStatus === 'ready' ? 'ready' : 'pending',
+          lastProgressAt: activatedAt,
+          publicVersion: publicResult.etag || publicResult.version,
+          publicWritten: true,
+          publicWrittenAt: record.publication?.publicWrittenAt || activatedAt,
+          status: 'published',
+          substage: record.publication?.indexingStatus === 'ready' ? 'ready' : 'indexing_pending'
+        })
+      });
+      return { record: published, slug, idempotent: false, activated: true };
+    } catch (cause) {
+      const failedAt = timestamp();
+      await repository.patch(record.id, {
+        failureCode: cause?.name === 'PublicationConflictError' ? 'publication_conflict' : 'public_write_failed',
+        publication: publicationCheckpoint(record, {
+          failedAt,
+          lastProgressAt: failedAt,
+          status: 'failed',
+          substage: 'public_write_failed'
+        })
+      }, { requiredStatus: 'publishing' }).catch(() => {});
+      throw new SubmissionPublicationError(
+        cause?.name === 'PublicationConflictError' ? 'publication_conflict' : 'public_write_failed',
+        cause?.name === 'PublicationConflictError'
+          ? 'The public research slug is already owned by another article.'
+          : 'The public Markdown write could not be verified and can be retried.',
+        cause?.name === 'PublicationConflictError' ? 409 : 502,
+        { cause }
+      );
+    }
+  }
+
+  async function enqueueUnlocked(id, options = {}) {
+    const published = await publishPublicUnlocked(id, options);
+    let record = published.record;
+    const indexingStatus = record.publication?.indexingStatus || 'pending';
+    if (indexingStatus === 'ready') {
+      return {
+        id: record.id,
+        slug: record.publishedSlug,
+        status: record.status,
+        indexingStatus,
+        idempotent: true,
+        activated: published.activated
+      };
+    }
+    const queuedAt = timestamp();
+    if (!['pending', 'indexing'].includes(indexingStatus)) {
+      record = await repository.patch(record.id, {
+        publication: publicationCheckpoint(record, {
+          attempt: Math.max(0, Number(record.publication?.attempt) || 0) + 1,
+          indexingFailureCode: null,
+          indexingStatus: 'pending',
+          lastProgressAt: queuedAt,
+          queuedAt,
+          substage: 'indexing_pending'
+        })
+      }, { requiredStatus: 'published' });
+    } else if (!record.publication?.queuedAt) {
+      record = await repository.patch(record.id, {
+        publication: publicationCheckpoint(record, {
+          attempt: Math.max(0, Number(record.publication?.attempt) || 0) + 1,
+          lastProgressAt: queuedAt,
+          queuedAt
+        })
+      }, { requiredStatus: 'published' });
+    }
+    return {
+      id: record.id,
+      slug: record.publishedSlug,
+      status: record.status,
+      indexingStatus: record.publication.indexingStatus,
+      idempotent: !published.activated && (indexingStatus === 'pending' || indexingStatus === 'indexing'),
+      activated: published.activated
+    };
   }
 
   async function processUnlocked(id, options = {}) {
     let record = await repository.get(id);
     if (!record) throw new SubmissionPublicationError('not_found', 'Submission not found.', 404);
-    if (record.status === 'published') {
-      return { id: record.id, slug: record.publishedSlug, status: record.status, idempotent: true };
+    if (record.status !== 'published' || record.publication?.status !== 'published' || !record.publication?.publicWritten) {
+      const published = await publishPublicUnlocked(id, options);
+      record = published.record;
     }
-    if (!['embedding_pending', 'embedding', 'publishing'].includes(record.status)) {
-      throw new SubmissionPublicationError('not_publishable', 'This submission is not ready to publish.', 409);
+    if (record.publication?.indexingStatus === 'ready' && record.publication?.indexed) {
+      return { id: record.id, slug: record.publishedSlug, status: record.status, indexingStatus: 'ready', idempotent: true };
     }
 
     const normalized = normalize(record);
-    const slug = await repository.reserveSlug(record.id, normalized.title);
+    const slug = record.publishedSlug || await repository.reserveSlug(record.id, normalized.title);
     const payload = publicPayload(record, slug, () => normalized);
-    let prepared = null;
-    let publicMayExist = record.status === 'publishing';
-    let indexMayExist = record.status === 'publishing';
-
-    if (record.status === 'embedding_pending') {
-      const embeddingStartedAt = timestamp();
-      record = await repository.transition(record.id, 'embedding', {
-        failureCode: null,
-        publication: publicationCheckpoint(record, {
-          embeddingCompleted: 0,
-          embeddingStartedAt,
-          embeddingTotal: null,
-          indexed: false,
-          lastProgressAt: embeddingStartedAt,
-          publicWritten: false,
-          substage: 'embedding'
-        })
-      });
-    } else if (record.status === 'publishing') {
-      const recoveryStartedAt = timestamp();
-      record = await repository.patch(record.id, {
-        publication: publicationCheckpoint(record, {
-          embeddingCompleted: 0,
-          embeddingStartedAt: recoveryStartedAt,
-          embeddingTotal: null,
-          lastProgressAt: recoveryStartedAt,
-          substage: 'embedding_recovery'
-        })
-      }, { requiredStatus: 'publishing' });
-    }
+    const indexingStartedAt = timestamp();
+    record = await repository.patch(record.id, {
+      publication: publicationCheckpoint(record, {
+        embeddingStartedAt: record.publication?.embeddingStartedAt || indexingStartedAt,
+        indexed: false,
+        indexingFailureCode: null,
+        indexingStartedAt,
+        indexingStatus: 'indexing',
+        lastProgressAt: indexingStartedAt,
+        substage: 'embedding'
+      })
+    }, { requiredStatus: 'published' });
 
     try {
+      let prepared;
       if (typeof searchIndex.prepare === 'function') {
         prepared = await stage('embedding', () => searchIndex.prepare(payload, {
+          checkpoint: record.publication?.embeddingCheckpoint,
+          async onCheckpoint(checkpoint) {
+            const checkpointAt = timestamp();
+            record = await repository.patch(record.id, {
+              publication: publicationCheckpoint(record, {
+                embeddingCheckpoint: checkpoint,
+                embeddingCompleted: Array.isArray(checkpoint?.vectors) ? checkpoint.vectors.length : 0,
+                embeddingTotal: Number.isInteger(checkpoint?.total) ? checkpoint.total : record.publication?.embeddingTotal,
+                lastProgressAt: checkpointAt
+              })
+            }, { requiredStatus: 'published' });
+          },
           async onProgress(completed, total) {
             const progressAt = timestamp();
             record = await repository.patch(record.id, {
@@ -176,89 +276,26 @@ function createPublicationCoordinator({
                 embeddingTotal: total,
                 lastProgressAt: progressAt
               })
-            }, { requiredStatus: record.status });
+            }, { requiredStatus: 'published' });
           },
           signal: options.signal
         }));
       }
-    } catch (cause) {
-      if (record.status === 'publishing') {
-        const cleaned = await compensate(payload, { indexMayExist, publicMayExist });
-        if (!cleaned) {
-          await repository.patch(record.id, { failureCode: 'cleanup_required' }, { requiredStatus: 'publishing' }).catch(() => {});
-          throw new SubmissionPublicationError('cleanup_required', 'Publication cleanup is incomplete; retry before taking another action.', 503, { cause });
-        }
-      }
-      const latest = await repository.get(record.id);
-      if (latest?.status === 'embedding' || latest?.status === 'publishing') {
-        await repository.transition(record.id, 'failed', {
-          failureCode: 'embedding_failed',
-          publication: publicationCheckpoint(latest, {
-            failedAt: timestamp(),
-            indexed: false,
-            publicWritten: false,
-            substage: 'failed'
-          })
-        });
-      }
-      throw new SubmissionPublicationError(
-        'embedding_failed',
-        'Embedding failed before the submission was made public and can be retried.',
-        502,
-        { cause }
-      );
-    }
-
-    const preparedCount = Array.isArray(prepared?.vectors) ? prepared.vectors.length : null;
-    const embeddingsReadyAt = timestamp();
-    const readyPublication = publicationCheckpoint(record, {
-      ...(preparedCount !== null ? {
-        embeddingCompleted: preparedCount,
-        embeddingTotal: preparedCount
-      } : {}),
-      embeddingsReadyAt,
-      lastProgressAt: embeddingsReadyAt,
-      substage: 'public_write'
-    });
-    if (record.status === 'embedding') {
-      record = await repository.transition(record.id, 'publishing', {
-        failureCode: null,
-        publication: readyPublication
-      });
-    } else {
-      record = await repository.patch(record.id, {
-        failureCode: null,
-        publication: readyPublication
-      }, { requiredStatus: 'publishing' });
-    }
-
-    try {
-      // Always upsert both deterministic identities on a publishing retry. A
-      // crash or ambiguous cleanup error can make persisted checkpoints lag
-      // reality; adapter upserts keyed by slug/submissionId are required to be
-      // idempotent and restore either missing side without creating duplicates.
-      // A transport failure may occur after Blob accepted the write, so cleanup
-      // must assume the deterministic public identity can exist once attempted.
-      publicMayExist = true;
-      const publicResult = await stage('public_write', () => publicStore.write(payload, { signal: options.signal }));
-      const publicVersion = publicResult && (publicResult.etag || publicResult.version) || null;
-      const publicWrittenAt = timestamp();
+      const preparedCount = Array.isArray(prepared?.vectors) ? prepared.vectors.length : null;
+      const embeddingsReadyAt = timestamp();
       record = await repository.patch(record.id, {
         publication: publicationCheckpoint(record, {
-          indexed: false,
-          lastProgressAt: publicWrittenAt,
-          publicVersion,
-          publicWritten: true,
-          publicWrittenAt,
+          ...(preparedCount !== null ? { embeddingCompleted: preparedCount, embeddingTotal: preparedCount } : {}),
+          embeddingsReadyAt,
+          lastProgressAt: embeddingsReadyAt,
           substage: 'search_commit'
         })
-      }, { requiredStatus: 'publishing' });
+      }, { requiredStatus: 'published' });
 
-      indexMayExist = true;
       const indexInput = {
         ...payload,
-        publicVersion,
-        lastModified: publicResult?.lastModified
+        publicVersion: record.publication.publicVersion,
+        lastModified: record.publication.publicWrittenAt ? new Date(record.publication.publicWrittenAt) : undefined
       };
       const indexResult = await stage('search_commit', () => (
         typeof searchIndex.commit === 'function'
@@ -267,66 +304,37 @@ function createPublicationCoordinator({
       ));
       const indexedAt = timestamp();
       record = await repository.patch(record.id, {
-        publication: publicationCheckpoint(record, {
-          indexed: true,
-          indexedAt,
-          indexVersion: indexResult && (indexResult.etag || indexResult.version) || null,
-          lastProgressAt: indexedAt,
-          substage: 'activating'
-        })
-      }, { requiredStatus: 'publishing' });
-
-      const activatedAt = timestamp();
-      const published = await repository.transition(record.id, 'published', {
         failureCode: null,
         publication: publicationCheckpoint(record, {
-          activatedAt,
-          lastProgressAt: activatedAt,
-          substage: 'published'
+          embeddingCheckpoint: null,
+          indexed: true,
+          indexedAt,
+          indexingFailureCode: null,
+          indexingStatus: 'ready',
+          indexVersion: indexResult && (indexResult.etag || indexResult.version) || null,
+          lastProgressAt: indexedAt,
+          substage: 'ready'
         })
-      });
-      return { id: published.id, slug, status: published.status, idempotent: false };
+      }, { requiredStatus: 'published' });
+      return { id: record.id, slug, status: record.status, indexingStatus: 'ready', idempotent: false };
     } catch (cause) {
-      // A conditional conflict explicitly proves this operation did not create
-      // or own the existing public document. Never compensate another article.
-      if (cause?.name === 'PublicationConflictError') publicMayExist = false;
-      record = await repository.patch(record.id, {
-        publication: publicationCheckpoint(record, {
-          lastProgressAt: timestamp(),
-          substage: 'cleanup'
-        })
-      }, { requiredStatus: 'publishing' }).catch(() => record);
-      const cleaned = await compensate(payload, { indexMayExist, publicMayExist });
-      if (cleaned) {
-        const latest = await repository.get(record.id);
-        if (latest?.status === 'publishing') {
-          await repository.transition(record.id, 'failed', {
-            failureCode: 'publication_failed',
-            publication: publicationCheckpoint(latest, {
-              failedAt: timestamp(),
-              indexed: false,
-              publicWritten: false,
-              substage: 'failed'
-            })
-          });
-        }
-        throw new SubmissionPublicationError(
-          'publication_failed',
-          'Publication failed safely and can be retried.',
-          502,
-          { cause }
-        );
-      }
-
-      // A partial public/index write may still exist. Keep the state non-deletable
-      // and retryable until an idempotent retry or operator cleanup resolves it.
+      const failedAt = timestamp();
+      const category = indexingFailureCode(cause);
       await repository.patch(record.id, {
-        failureCode: 'cleanup_required'
-      }, { requiredStatus: 'publishing' }).catch(() => {});
+        failureCode: null,
+        publication: publicationCheckpoint(record, {
+          failedAt,
+          indexed: false,
+          indexingFailureCode: category,
+          indexingStatus: 'failed',
+          lastProgressAt: failedAt,
+          substage: 'indexing_failed'
+        })
+      }, { requiredStatus: 'published' }).catch(() => {});
       throw new SubmissionPublicationError(
-        'cleanup_required',
-        'Publication cleanup is incomplete; retry before taking another action.',
-        503,
+        category,
+        'The note is public, but AI indexing did not complete and can be retried.',
+        502,
         { cause }
       );
     }
@@ -341,7 +349,7 @@ function createPublicationCoordinator({
       const record = await repository.get(id);
       if (!record) throw new SubmissionPublicationError('not_found', 'Submission not found.', 404);
       if (!['ready_for_review', 'failed'].includes(record.status)) {
-        throw new SubmissionPublicationError('not_rejectable', 'Only a ready or failed submission can be rejected.', 409);
+        throw new SubmissionPublicationError('not_rejectable', 'Only a ready or private failed submission can be rejected.', 409);
       }
       return repository.transition(id, 'rejected', { rejectionReason: normalizedReason });
     });
@@ -352,48 +360,69 @@ function createPublicationCoordinator({
       const record = await repository.get(id);
       if (!record) throw new SubmissionPublicationError('not_found', 'Submission not found.', 404);
       if (record.status === 'deleted') return { id, status: 'deleted', idempotent: true };
-      if (['embedding_pending', 'embedding', 'publishing'].includes(record.status)) {
-        throw new SubmissionPublicationError('cleanup_required', 'A submission in the publication pipeline cannot be deleted.', 409);
-      }
-      if (record.status === 'published') {
-        // Deletion must remain possible even if an older record no longer
-        // passes the current normalization policy.
-        const payload = Object.freeze({ submissionId: record.id, slug: record.publishedSlug });
+      if (record.publishedSlug) {
+        const payload = Object.freeze({
+          submissionId: record.id,
+          slug: record.publishedSlug,
+          publicVersion: record.publication?.publicVersion || null
+        });
         try {
-          await searchIndex.remove(payload);
-          await publicStore.remove(payload);
+          // Prove immutable Blob ownership before deleting Search documents by
+          // slug. If the Blob is already absent, Search removal is limited to
+          // the durable source ETag so a collision can never erase another
+          // article's evidence.
+          const ownedBlob = await publicStore.verifyOwnership(payload);
+          const externalStateMayExist = Boolean(
+            ownedBlob
+            || record.publication?.publicWritten
+            || record.publication?.indexed
+            || record.publication?.publicVersion
+          );
+          if (externalStateMayExist) {
+            await searchIndex.remove(payload, { ownershipVerified: Boolean(ownedBlob) });
+          }
+          if (ownedBlob) await publicStore.remove(payload);
         } catch (cause) {
           throw new SubmissionPublicationError(
             'unpublish_failed',
-            'The published submission could not be removed safely; retry the operation.',
+            'The submission could not be removed safely; retry the deletion.',
             502,
             { cause }
           );
         }
-      } else if (record.publication?.publicWritten || record.publication?.indexed) {
-        throw new SubmissionPublicationError('cleanup_required', 'Publication cleanup is required before deletion.', 409);
       }
       const deleted = await repository.transition(id, 'deleted', {
         rejectionReason: null,
         failureCode: null,
-        publication: { publicWritten: false, indexed: false }
+        publication: {
+          status: 'deleted',
+          indexingStatus: 'not_started',
+          publicWritten: false,
+          indexed: false,
+          embeddingCheckpoint: null
+        }
       });
       return { id, status: deleted.status, idempotent: false };
     });
   }
 
   return {
-    enqueue(id) {
-      return exclusive(id, () => enqueueUnlocked(id));
+    enqueue(id, options) {
+      return exclusive(id, () => enqueueUnlocked(id, options));
     },
     process(id, options) {
       return exclusive(id, () => processUnlocked(id, options));
     },
-    publish(id) {
+    publish(id, options) {
       return exclusive(id, async () => {
-        await enqueueUnlocked(id);
-        return processUnlocked(id);
+        const queued = await enqueueUnlocked(id, options);
+        if (queued.indexingStatus === 'ready') return queued;
+        const processed = await processUnlocked(id, options);
+        return { ...processed, activated: queued.activated };
       });
+    },
+    publishPublic(id, options) {
+      return exclusive(id, () => publishPublicUnlocked(id, options));
     },
     reject,
     remove
@@ -402,5 +431,6 @@ function createPublicationCoordinator({
 
 module.exports = {
   SubmissionPublicationError,
-  createPublicationCoordinator
+  createPublicationCoordinator,
+  indexingFailureCode
 };

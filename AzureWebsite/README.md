@@ -111,7 +111,9 @@ The tests are offline and inject credentials and HTTP clients. They cover resear
 
 The app now contains a feature-gated Google-only submission workflow. It is disabled unless `RESEARCH_SUBMISSIONS_ENABLED=true`. When enabled, authenticated users can upload one UTF-8 `.md` file, inspect the same sanitized renderer used by the public library, submit it for review, and see only their own records. The sole administrator is matched only by the immutable Google `sub` configured in `ADMIN_GOOGLE_SUB`.
 
-Pending content is stored in the private submission repository and is never passed to the public Blob adapter, Search adapter, research repository, or assistant. The publication coordinator is the only promotion boundary: it reserves a stable slug, writes whitelisted/normalized Markdown with an idempotent conditional Blob operation, indexes and verifies the resulting chunks, and only then marks the record `published`. A failed operation removes Search chunks before removing the public copy. Incomplete compensation remains `publishing` and cannot be claimed as safely failed or deleted.
+Pending content is stored in the private submission repository and is never passed to the public Blob adapter, Search adapter, research repository, or assistant. The publication coordinator is the only promotion boundary. Approval validates and normalizes the reviewed Markdown, reserves a stable collision-safe slug, conditionally writes the Blob, reads its immutable operation/content metadata back, and durably marks the record `published`. The public library can list and render that verified Blob immediately.
+
+Embeddings and Azure AI Search are a separate resumable phase with independent `pending`, `indexing`, `ready`, and `failed` states. A Search or embedding failure leaves the verified Markdown public. The assistant evidence resolver rejects reviewed-submission chunks until the record is both fully indexed and verified as `ready`, including when a failed Search request left partial documents behind. Embedding vectors are checkpointed in the private `SUBMISSION_DATA_FILE` after each completed section, never logged, reused after restart/retry, and erased after successful indexing or deletion. Deletion is permitted from partial states and removes all Search documents before removing the owned public Blob.
 
 ### Required configuration
 
@@ -121,7 +123,7 @@ Use App Service configuration or a private local environment; never commit value
 - `GOOGLE_OIDC_CLIENT_ID`, `GOOGLE_OIDC_CLIENT_SECRET`, and `GOOGLE_OIDC_REDIRECT_URI` configure an authorization-code Google OIDC client. Production redirect URIs must use HTTPS.
 - `ADMIN_GOOGLE_SUB` is the one administrator's immutable Google subject, not an email or display name.
 - `SUBMISSION_DATA_FILE` is an absolute path on the App Service private persistent data mount. The repository writes with directory mode `0700`, file mode `0600`, and atomic replacement.
-- `SUBMISSION_PUBLISHING_ENABLED=true` enables the managed-identity public Blob and Search adapters. Leave it false until Azure permissions and all existing embedding/Search settings are ready.
+- `SUBMISSION_PUBLISHING_ENABLED=true` enables the managed-identity public Blob and Search adapters. Blob publication can succeed while AI indexing is unavailable, but the configured identity still needs the scoped permissions for both phases.
 - `SUBMISSION_ACCOUNT_DAILY_LIMIT`, `SUBMISSION_IP_DAILY_LIMIT`, `SUBMISSION_SESSION_TTL_MS`, and `SUBMISSION_MAX_SESSIONS` are optional and strictly bounded.
 
 Publishing uses the existing `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_CONTAINER`, `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` settings. It rejects API keys, SAS tokens, and storage connection strings. The App Service managed identity needs the least-privilege data-plane roles required to write/delete reviewed public blobs, write/delete Search documents, and call the embedding deployment. Those role changes are not part of this local implementation and must be reviewed before deployment.
@@ -132,8 +134,23 @@ Publishing uses the existing `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_CONTAI
 - Every state-changing browser form requires a session-bound CSRF token and a same-origin `Origin` or `Referer`. Production submission routes reject a non-HTTPS request behind the trusted App Service proxy.
 - Upload parsing permits one file and one CSRF field, enforces 3 MiB while streaming, then validates the actual bytes as fatal UTF-8 text with no NUL/binary controls and bounded front matter. Original filenames are never persisted.
 - The in-process account/IP quota defaults to 5/20 upload attempts per 24 hours. Sessions and quotas assume the current single App Service instance; replace them with a shared store before horizontal scaling.
-- Pending records remain private until submitted, replaced, or deleted. Rejected and failed records remain private until the administrator deletes them. Published records remain until an administrator deletes them; that operation removes Search chunks first and the public Blob second.
+- Pending records remain private until submitted, replaced, or deleted. Rejected and pre-publication failed records remain private. A published record remains readable during pending, active, or failed AI indexing. Owner/admin status views show public availability separately from AI readiness.
+- Publication and indexing telemetry contains only stage, safe category, count, duration, and status fields. Markdown, embedding inputs, vectors, answers, credentials, and raw Azure response bodies are not logged.
 - Deletion retains only an opaque tombstone needed for state/slug safety. It scrubs the owner identifier, Markdown, parsed metadata, and rejection reason. Deleted records are excluded from normal owner/admin lists.
 - The file repository is the smallest durable single-instance MVP abstraction. Before multi-instance or higher-volume use, replace it behind the existing repository interface with a concurrency-safe private store; do not use the failed/unused Cosmos account by default.
 
 No Azure resources are provisioned or mutated merely by installing or testing this code. All tests use injected repositories and fake publication adapters.
+
+### Version-1 record recovery
+
+The version-2 repository reads existing version-1 files and adds independent publication/indexing checkpoints without changing owner data or slug reservations. Existing `published` records migrate to public + AI-ready. Legacy `embedding_pending`/`embedding` records are resumed through the public-Blob phase first. A legacy `publishing` + `cleanup_required` record migrates conservatively to public verification required + AI indexing failed; it is not assumed public merely from the old checkpoint.
+
+For the current production recovery record, after an independently reviewed deployment:
+
+1. Back up the private `SUBMISSION_DATA_FILE` and keep the existing App Service managed-identity roles and settings unchanged.
+2. Start the upgraded single instance. Startup recovery will read the reserved slug, verify the Blob's operation hash and normalized-content hash, write it only when absent, then durably activate public visibility.
+3. If automatic recovery remains at **Publishing public Markdown**, use the admin **Retry public publication** action. A metadata collision is fail-closed; inspect the existing Blob ownership rather than deleting or overwriting it.
+4. Once the UI shows **Published**, the note is readable. If it also shows **AI indexing failed**, use **Retry AI indexing**; the retry reuses any durable embedding checkpoint and repairs/verifies Search without rewriting or unpublishing the Blob.
+5. Confirm the public `/research` listing and article route separately from the **AI ready** state before treating assistant retrieval as recovered.
+
+These are deployment-time recovery steps only. This repository change does not perform them, deploy code, or alter Azure/production state.

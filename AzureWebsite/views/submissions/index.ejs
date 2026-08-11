@@ -4,7 +4,7 @@
     ready_for_review: 'Ready for review',
     embedding_pending: 'Embedding pending',
     embedding: 'Embedding',
-    publishing: 'Publishing',
+    publishing: 'Publishing public Markdown',
     published: 'Published',
     rejected: 'Rejected',
     failed: 'Failed',
@@ -76,7 +76,8 @@
             <li>
               <article class="submission-row">
                 <div class="submission-row-main">
-                  <span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span>
+                  <span class="submission-status status-<%= submission.status %>"><%= submission.publicationProgress?.publicationLabel || statusLabels[submission.status] || submission.status %></span>
+                  <% if (submission.publicationProgress && submission.publicationProgress.publicAvailable) { %><p><strong><%= submission.publicationProgress.aiLabel %></strong></p><% } %>
                   <h2><a href="/research/submissions/<%= submission.id %>"><%= submission.title %></a></h2>
                   <p>Updated <time datetime="<%= submission.updatedAt %>"><%= displayDate(submission.updatedAt) %></time></p>
                   <% if (submission.status === 'rejected' && submission.rejectionReason) { %>

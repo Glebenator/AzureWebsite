@@ -27,7 +27,10 @@ const LOGIN_COOKIE = 'research_login';
 const LOGIN_TTL_MS = 10 * 60 * 1000;
 const LOGIN_ATTEMPT_LIMIT = 1000;
 const OWNER_EDITABLE_STATES = new Set(['pending', 'ready_for_review', 'rejected', 'failed']);
-const OWNER_DELETABLE_STATES = new Set(['pending', 'ready_for_review', 'published', 'rejected', 'failed']);
+const OWNER_DELETABLE_STATES = new Set([
+  'pending', 'ready_for_review', 'embedding_pending', 'embedding', 'publishing',
+  'published', 'rejected', 'failed'
+]);
 
 function createLoginAttemptStore(options = {}) {
   const now = options.now || Date.now;
@@ -77,8 +80,8 @@ function statusMessage(value) {
     edited: 'Markdown changes saved and revalidated.',
     replaced: 'Pending Markdown replaced and revalidated.',
     deleted: 'Submission data was deleted.',
-    embedding_pending: 'Publishing queued. Embedding will continue in the background.',
-    published: 'Submission published and indexed successfully.',
+    published: 'Submission published. AI indexing continues separately in the background.',
+    published_ai_ready: 'Submission published and AI indexing is ready.',
     rejected: 'Submission rejected with a reason.'
   };
   return messages[value] || '';
@@ -200,6 +203,7 @@ function createSubmissionsRouter(system = {}) {
       publicationProgress: createPublicationProgress(record),
       rejectionReason: record.rejectionReason || '',
       failureCode: record.failureCode || '',
+      indexingFailureCode: record.publication?.indexingFailureCode || '',
       slug: record.publishedSlug || '',
       ...(includeMarkdown ? { markdown: record.markdown } : {}),
       ...(admin ? { ownerLabel: ownerLabel(record.ownerId) } : {})
@@ -472,6 +476,8 @@ function createSubmissionsRouter(system = {}) {
       return res.json({
         progress: createPublicationProgress(record),
         status: record.status,
+        publicationStatus: record.publication?.status || 'private',
+        indexingStatus: record.publication?.indexingStatus || 'not_started',
         updatedAt: record.updatedAt
       });
     } catch (error) {
@@ -537,6 +543,8 @@ function createSubmissionsRouter(system = {}) {
       return res.json({
         progress: createPublicationProgress(record),
         status: record.status,
+        publicationStatus: record.publication?.status || 'private',
+        indexingStatus: record.publication?.indexingStatus || 'not_started',
         updatedAt: record.updatedAt
       });
     } catch (error) {
@@ -570,7 +578,10 @@ function createSubmissionsRouter(system = {}) {
       const result = publicationWorker
         ? await publicationWorker.enqueue(req.params.id)
         : await publication.publish(req.params.id);
-      const status = result?.status === 'published' ? 'published' : 'embedding_pending';
+      if (result?.activated && !publicationWorker && typeof system.onCorpusChanged === 'function') {
+        await system.onCorpusChanged();
+      }
+      const status = result?.indexingStatus === 'ready' ? 'published_ai_ready' : 'published';
       return res.redirect(303, `/admin/submissions/${req.params.id}?status=${status}`);
     } catch (error) {
       const failure = publicError(error);

@@ -20,9 +20,9 @@
   }
 
   function poll(region) {
-    var currentStatus = region.getAttribute('data-publication-status');
+    var currentState = region.getAttribute('data-publication-state');
     var statusUrl = region.getAttribute('data-publication-status-url');
-    if (!currentStatus || !statusUrl) return;
+    if (!currentState || !statusUrl) return;
     window.fetch(statusUrl, {
       cache: 'no-store',
       credentials: 'same-origin',
@@ -31,11 +31,15 @@
       if (!response.ok) throw new Error('Status unavailable.');
       return response.json();
     }).then(function(payload) {
-      if (payload && payload.status && payload.status !== currentStatus) {
+      var nextState = payload && payload.status
+        ? payload.status + ':' + (payload.indexingStatus || 'not_started')
+        : '';
+      if (nextState && nextState !== currentState) {
         window.location.reload();
         return;
       }
       updateRegion(region, payload);
+      if (payload && payload.progress && payload.progress.active === false) return;
       window.setTimeout(function() { poll(region); }, 5000);
     }).catch(function() {
       window.setTimeout(function() { poll(region); }, 15000);

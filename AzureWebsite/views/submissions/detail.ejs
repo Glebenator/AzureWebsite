@@ -4,7 +4,7 @@
     ready_for_review: 'Ready for review',
     embedding_pending: 'Embedding pending',
     embedding: 'Embedding',
-    publishing: 'Publishing',
+    publishing: 'Publishing public Markdown',
     published: 'Published',
     rejected: 'Rejected',
     failed: 'Failed',
@@ -16,8 +16,9 @@
     return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
   var canEdit = ['pending', 'ready_for_review', 'rejected', 'failed'].includes(submission.status);
-  var canDelete = ['pending', 'ready_for_review', 'published', 'rejected', 'failed'].includes(submission.status);
-  var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
+  var canDelete = submission.status !== 'deleted';
+  var publicationProgress = submission.publicationProgress || { active: false, aiState: 'not_started', aiLabel: 'AI indexing not started', publicAvailable: false, requiresAction: false };
+  var publicationActive = publicationProgress.active || publicationProgress.requiresAction;
 %>
 <!doctype html>
 <html lang="en">
@@ -60,7 +61,7 @@
 
       <header class="submission-detail-header">
         <div>
-          <span class="submission-status status-<%= submission.status %>"><%= statusLabels[submission.status] || submission.status %></span>
+          <span class="submission-status status-<%= submission.status %>"><%= publicationProgress.publicationLabel || statusLabels[submission.status] || submission.status %></span>
           <h1><%= submission.title %></h1>
         </div>
         <dl class="submission-metadata">
@@ -77,27 +78,27 @@
           <p><%= submission.rejectionReason %></p>
         </section>
       <% } %>
-      <% if (submission.status === 'published' && submission.slug) { %>
-        <p class="submission-notice" role="status">This note is published and available to the research assistant. <a href="/research/<%= submission.slug %>">Read the public note</a>.</p>
+      <% if (publicationProgress.publicAvailable && submission.slug) { %>
+        <p class="submission-notice" role="status">This note is published and readable now. <strong><%= publicationProgress.aiLabel %>.</strong> <a href="/research/<%= submission.slug %>">Read the public note</a>.</p>
       <% } else if (submission.status !== 'deleted') { %>
         <p class="submission-boundary"><i class="ph ph-lock" aria-hidden="true"></i><span>This preview is private and unavailable to public search and assistant retrieval.</span></p>
       <% } %>
       <% if (publicationActive) { %>
-        <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/research/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
-          <p class="submission-kicker">Background publication</p>
-          <h2 id="publication-progress-title"><%= statusLabels[submission.status] %></h2>
-          <p><%= submission.status === 'embedding_pending'
-            ? 'Your approved submission is queued for embedding.'
-            : submission.status === 'embedding'
-              ? 'Search vectors are being created. Your submission is still private.'
-              : 'The public note and Search documents are being committed and verified.' %></p>
-          <p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p>
+        <section class="submission-progress" <% if (publicationProgress.active) { %>data-publication-refresh data-publication-state="<%= submission.status %>:<%= publicationProgress.aiState %>" data-publication-status-url="/research/submissions/<%= submission.id %>/status"<% } %> aria-live="polite" aria-labelledby="publication-progress-title">
+          <p class="submission-kicker">Publication and AI readiness</p>
+          <h2 id="publication-progress-title" data-publication-summary><%= publicationProgress.summary %></h2>
+          <p data-publication-detail><%= publicationProgress.publicAvailable
+            ? 'The public note is available to readers. The assistant will not use it until every Search document is indexed and verified.'
+            : publicationProgress.requiresAction
+              ? 'The public Markdown Blob was not durably verified. The submission remains private.'
+              : 'The public Markdown Blob is being written and verified.' %></p>
+          <% if (publicationProgress.active) { %><p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p><% } %>
         </section>
       <% } %>
-      <% if (submission.status === 'failed') { %>
-        <p class="submission-notice is-error" role="status"><%= submission.failureCode === 'embedding_failed'
-          ? 'Embedding did not complete. The submission remains private while an administrator retries it.'
-          : 'Publication did not complete. The submission remains private while an administrator reviews it.' %></p>
+      <% if (publicationProgress.requiresAction) { %>
+        <p class="submission-notice is-error" role="status"><%= publicationProgress.publicAvailable
+          ? 'AI indexing did not complete. The public note remains readable, but the assistant cannot use it until an administrator retries indexing.'
+          : 'Public publication did not complete. The submission remains private until an administrator retries or deletes it.' %></p>
       <% } %>
 
       <% if (submission.status !== 'deleted') { %>
@@ -115,7 +116,7 @@
             <h2 id="submission-actions-title">Manage submission</h2>
             <p>
               <% if (canEdit) { %>Saving changes returns this submission to draft status so you can review it again.<% } %>
-              <% if (submission.status === 'published') { %>Deleting also removes the public note and search entry.<% } else { %>Deleting removes the stored Markdown and cannot be undone.<% } %>
+              <% if (submission.slug) { %>Deleting removes any partial or complete Search documents and the public note.<% } else { %>Deleting removes the stored Markdown and cannot be undone.<% } %>
             </p>
           </div>
           <div class="submission-action-group">
@@ -131,7 +132,7 @@
             <% } %>
             <% if (canDelete) { %>
               <details class="submission-delete-control">
-                <summary class="submission-button is-danger"><%= submission.status === 'published' ? 'Delete and unpublish' : 'Delete submission' %></summary>
+                <summary class="submission-button is-danger"><%= submission.slug ? 'Delete and unpublish' : 'Delete submission' %></summary>
                 <div class="submission-delete-confirmation">
                   <p>This action is permanent. Confirm only if you want to remove this submission.</p>
                   <form action="/research/submissions/<%= submission.id %>/delete" method="post">

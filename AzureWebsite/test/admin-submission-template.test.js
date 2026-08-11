@@ -42,12 +42,44 @@ test('admin queue tolerates a legacy view model during a rolling deployment', as
   assert.doesNotMatch(html, /undefined/);
 });
 
-test('admin detail falls back safely until progress fields reach the active process', async () => {
+test('admin detail falls back safely during a rolling deployment', async () => {
   const html = await ejs.renderFile(
     path.join(views, 'detail.ejs'),
     locals({ submission: legacySubmission })
   );
-  assert.match(html, /Progress details will appear after the application update completes/);
-  assert.match(html, /Publication checkpoints/);
+  assert.match(html, /Publishing public Markdown/);
+  assert.match(html, /Retry public publication/);
   assert.doesNotMatch(html, /Cannot read properties|undefined/);
+});
+
+test('admin detail shows published availability separately from failed AI indexing', async () => {
+  const html = await ejs.renderFile(
+    path.join(views, 'detail.ejs'),
+    locals({
+      submission: {
+        ...legacySubmission,
+        status: 'published',
+        slug: 'rolling-deployment-submission',
+        publicationProgress: {
+          active: false,
+          aiLabel: 'AI indexing failed',
+          aiState: 'failed',
+          checkpoints: [],
+          completed: 1,
+          detail: 'Attempt 2',
+          publicAvailable: true,
+          publicationLabel: 'Published',
+          requiresAction: true,
+          summary: 'Published · AI indexing failed',
+          total: 3
+        }
+      }
+    })
+  );
+  assert.match(html, /Published/);
+  assert.match(html, /AI indexing failed/);
+  assert.match(html, /verified Markdown remains public and readable/);
+  assert.match(html, /Retry AI indexing/);
+  assert.doesNotMatch(html, /Not public/);
+  assert.doesNotMatch(html, /data-publication-refresh|Status refreshes automatically/);
 });

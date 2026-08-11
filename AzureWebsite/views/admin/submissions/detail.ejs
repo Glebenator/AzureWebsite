@@ -4,7 +4,7 @@
     ready_for_review: 'Ready for review',
     embedding_pending: 'Embedding pending',
     embedding: 'Embedding',
-    publishing: 'Publishing',
+    publishing: 'Publishing public Markdown',
     published: 'Published',
     rejected: 'Rejected',
     failed: 'Failed',
@@ -15,11 +15,6 @@
     var date = new Date(value);
     return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
-  var canPublish = ['ready_for_review', 'failed'].includes(submission.status)
-    || (submission.status === 'publishing' && submission.failureCode === 'cleanup_required');
-  var canReject = ['ready_for_review', 'failed'].includes(submission.status);
-  var publicationActive = ['embedding_pending', 'embedding', 'publishing'].includes(submission.status);
-  var canDelete = !publicationActive && submission.status !== 'deleted';
   var publicationProgress = submission.publicationProgress || {
     checkpoints: [],
     completed: null,
@@ -28,6 +23,12 @@
     summary: statusLabels[submission.status] || 'Publishing',
     total: null
   };
+  var canPublish = ['ready_for_review', 'failed'].includes(submission.status)
+    || submission.status === 'publishing'
+    || (submission.status === 'published' && publicationProgress.aiState === 'failed');
+  var canReject = ['ready_for_review', 'failed'].includes(submission.status) && !publicationProgress.publicAvailable;
+  var publicationActive = publicationProgress.active || publicationProgress.requiresAction;
+  var canDelete = submission.status !== 'deleted';
 %>
 <!doctype html>
 <html lang="en">
@@ -70,7 +71,8 @@
 
       <header class="submission-detail-header">
         <div>
-          <span class="submission-status status-<%= submission.status %>"><%= publicationProgress.requiresAction ? 'Cleanup required' : statusLabels[submission.status] || submission.status %></span>
+          <span class="submission-status status-<%= submission.status %>"><%= publicationProgress.publicationLabel || statusLabels[submission.status] || submission.status %></span>
+          <% if (publicationProgress.publicAvailable) { %><p><strong><%= publicationProgress.aiLabel %></strong></p><% } %>
           <h1><%= submission.title %></h1>
         </div>
         <dl class="submission-metadata">
@@ -86,8 +88,8 @@
         <section class="submission-rejection" aria-labelledby="rejection-title"><h2 id="rejection-title">Rejection reason</h2><p><%= submission.rejectionReason %></p></section>
       <% } %>
       <% if (publicationActive) { %>
-        <section class="submission-progress" data-publication-refresh data-publication-status="<%= submission.status %>" data-publication-status-url="/admin/submissions/<%= submission.id %>/status" aria-live="polite" aria-labelledby="publication-progress-title">
-          <p class="submission-kicker">Background publication</p>
+        <section class="submission-progress" <% if (publicationProgress.active) { %>data-publication-refresh data-publication-state="<%= submission.status %>:<%= publicationProgress.aiState %>" data-publication-status-url="/admin/submissions/<%= submission.id %>/status"<% } %> aria-live="polite" aria-labelledby="publication-progress-title">
+          <p class="submission-kicker">Publication and AI readiness</p>
           <h2 id="publication-progress-title" data-publication-summary><%= publicationProgress.summary %></h2>
           <p data-publication-detail><%= publicationProgress.detail %></p>
           <% if (publicationProgress.total !== null) { %>
@@ -106,15 +108,15 @@
               </li>
             <% }); %>
           </ol>
-          <p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p>
+          <% if (publicationProgress.active) { %><p class="submission-progress-refresh">Status refreshes automatically. You can safely leave this page.</p><% } %>
         </section>
       <% } %>
-      <% if (submission.status === 'failed') { %>
+      <% if (publicationProgress.requiresAction) { %>
         <section class="submission-rejection" aria-labelledby="publication-failure-title">
-          <h2 id="publication-failure-title">Publication paused safely</h2>
-          <p><%= submission.failureCode === 'embedding_failed'
-            ? 'Embedding did not complete, and nothing was activated publicly. Retry when the service is available.'
-            : 'The attempt failed and completed its cleanup. Retry to resume from the embedding phase.' %></p>
+          <h2 id="publication-failure-title"><%= publicationProgress.publicAvailable ? 'AI indexing paused' : 'Public publication paused' %></h2>
+          <p><%= publicationProgress.publicAvailable
+            ? 'The verified Markdown remains public and readable. Search evidence is blocked until an indexing-only retry completes.'
+            : 'The public Blob was not durably verified. Retry publication or delete the submission safely.' %></p>
         </section>
       <% } %>
 
@@ -122,7 +124,7 @@
         <section class="submission-review" aria-labelledby="preview-title">
           <div class="submission-preview-heading">
             <div><p class="submission-kicker">Sanitized preview</p><h2 id="preview-title">Publication candidate</h2></div>
-            <% if (submission.status !== 'published') { %><span class="submission-private-marker"><i class="ph ph-lock" aria-hidden="true"></i>Not public</span><% } %>
+            <% if (!publicationProgress.publicAvailable) { %><span class="submission-private-marker"><i class="ph ph-lock" aria-hidden="true"></i>Not public</span><% } %>
           </div>
           <div class="submission-preview research-prose"><%- submission.previewHtml %></div>
         </section>
@@ -133,14 +135,14 @@
           <div class="admin-decision-intro">
             <p class="submission-kicker">Server-authorized actions</p>
             <h2 id="decision-title">Review decision</h2>
-            <p>Publishing queues embedding first, then commits the public archive and Search documents. The note activates only after both finish.</p>
+            <p>Approval first verifies the normalized public Markdown Blob and activates the readable note. Embeddings and Search then continue as a separate retryable phase.</p>
           </div>
 
           <% if (canPublish) { %>
             <form class="admin-publish-form" action="/admin/submissions/<%= submission.id %>/publish" method="post">
               <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-              <button class="submission-button" type="submit"><i class="ph ph-check" aria-hidden="true"></i><span><%= submission.failureCode === 'cleanup_required' ? 'Retry publication' : 'Publish submission' %></span></button>
-              <p>This returns immediately. Progress continues in the background and is safe to retry after a failure.</p>
+              <button class="submission-button" type="submit"><i class="ph ph-check" aria-hidden="true"></i><span><%= publicationProgress.publicAvailable ? 'Retry AI indexing' : submission.status === 'publishing' ? 'Retry public publication' : 'Publish submission' %></span></button>
+              <p>The request waits for a verified public Blob. AI indexing then continues in the background and resumes from durable embedding checkpoints.</p>
             </form>
           <% } %>
 
@@ -159,7 +161,7 @@
           <% if (canDelete) { %>
             <form class="admin-delete-form" action="/admin/submissions/<%= submission.id %>/delete" method="post">
               <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-              <div><h3>Delete submission</h3><p>Remove stored submission data and any searchable chunks. This cannot be undone.</p></div>
+              <div><h3>Delete submission</h3><p>Remove any partial or complete Search documents, the public Blob, and stored submission data. This cannot be undone.</p></div>
               <button class="submission-button is-danger" type="submit">Delete permanently</button>
             </form>
           <% } %>

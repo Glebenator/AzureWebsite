@@ -9,11 +9,15 @@ const {
   buildDocuments,
   embedDocuments
 } = require('../scripts/index-research');
+const { validVector } = require('./azure-embedding-client');
 
 const MAX_MARKDOWN_BYTES = 3 * 1024 * 1024;
 const SEARCH_API_VERSION = '2026-04-01';
 const SEARCH_SCOPE = 'https://search.azure.com/.default';
 const SEARCH_REQUEST_TIMEOUT_MS = 30 * 1000;
+const SEARCH_VERIFY_DELAYS_MS = Object.freeze([100, 250, 500, 1000, 2000]);
+const SEARCH_REMOVE_QUIET_READS = SEARCH_VERIFY_DELAYS_MS.length + 1;
+const SEARCH_REMOVE_MAX_READS = SEARCH_REMOVE_QUIET_READS * 2;
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,127}$/;
 
@@ -115,6 +119,40 @@ function createAzurePublicPublisher(options = {}) {
   const credential = options.credential || new DefaultAzureCredential({ excludeInteractiveBrowserCredential: true });
   const containerClient = options.containerClient || createDefaultContainerClient(options, env, credential);
 
+  async function verifyOwnership(input, optionsForRequest = {}) {
+    const value = publicationIdentity(input);
+    const client = containerClient.getBlockBlobClient(value.blobName);
+    let properties;
+    try {
+      properties = await client.getProperties(
+        optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : undefined
+      );
+    } catch (error) {
+      if (Number(error?.statusCode) === 404) return null;
+      throw error;
+    }
+    if (properties?.metadata?.operationhash !== value.operationHash || !properties?.etag) {
+      throw new PublicationConflictError('The selected public slug is owned by another operation.');
+    }
+    return {
+      blobName: value.blobName,
+      etag: properties.etag,
+      lastModified: properties.lastModified || new Date(),
+      metadata: properties.metadata || {}
+    };
+  }
+
+  async function verify(input, optionsForRequest = {}) {
+    const value = publicationInput(input);
+    const owned = await verifyOwnership(input, optionsForRequest);
+    if (!owned) return null;
+    if (owned.metadata.contenthash !== value.contentHash) {
+      throw new PublicationConflictError('The selected public slug contains different content.');
+    }
+    const { metadata, ...verified } = owned;
+    return verified;
+  }
+
   const adapter = {
     async write(input, optionsForRequest = {}) {
       const value = publicationInput(input);
@@ -131,21 +169,15 @@ function createAzurePublicPublisher(options = {}) {
           ...(optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : {})
         });
         if (!response?.etag) throw new Error('Azure Blob upload did not return an ETag.');
-        return { blobName: value.blobName, etag: response.etag, lastModified: response.lastModified || new Date() };
+        return verify(input, optionsForRequest);
       } catch (error) {
         if (![409, 412].includes(Number(error?.statusCode))) throw error;
-        const properties = await client.getProperties(
-          optionsForRequest.signal ? { abortSignal: optionsForRequest.signal } : undefined
-        );
-        if (
-          properties?.metadata?.operationhash !== value.operationHash
-          || properties?.metadata?.contenthash !== value.contentHash
-        ) {
-          throw new PublicationConflictError('The selected public slug is already in use.');
-        }
-        return { blobName: value.blobName, etag: properties.etag, lastModified: properties.lastModified || new Date() };
+        return verify(input, optionsForRequest);
       }
     },
+
+    verify,
+    verifyOwnership,
 
     async remove(input, optionsForRequest = {}) {
       const value = publicationIdentity(input);
@@ -239,6 +271,39 @@ function createAzureSubmissionIndexer(options = {}) {
   const wait = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const embeddingClient = options.embeddingClient || createAzureEmbeddingClient({ env, credential });
 
+  async function verificationDelay(milliseconds, signal) {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('Azure AI Search verification was cancelled.'), { code: 'search_cancelled' });
+    }
+    let abort;
+    try {
+      await Promise.race([
+        wait(milliseconds),
+        new Promise((_, reject) => {
+          abort = () => reject(Object.assign(
+            new Error('Azure AI Search verification was cancelled.'),
+            { code: 'search_cancelled' }
+          ));
+          signal?.addEventListener?.('abort', abort, { once: true });
+        })
+      ]);
+    } finally {
+      signal?.removeEventListener?.('abort', abort);
+    }
+  }
+
+  async function pollDocumentsForSlug(slug, select, signal, accepts) {
+    let documents = [];
+    for (let attempt = 0; attempt <= SEARCH_VERIFY_DELAYS_MS.length; attempt += 1) {
+      documents = await documentsForSlug(slug, select, signal);
+      if (accepts(documents)) return documents;
+      if (attempt < SEARCH_VERIFY_DELAYS_MS.length) {
+        await verificationDelay(SEARCH_VERIFY_DELAYS_MS[attempt], signal);
+      }
+    }
+    return null;
+  }
+
   async function documentsForSlug(slug, select = 'id', signal) {
     const documents = [];
     const pageSize = 1000;
@@ -270,22 +335,51 @@ function createAzureSubmissionIndexer(options = {}) {
   async function remove(value, optionsForRequest = {}) {
     const slug = typeof value === 'string' ? value : value?.slug;
     if (!SLUG_PATTERN.test(slug || '')) throw new TypeError('Publication slug is invalid.');
-    const existing = await documentsForSlug(slug, 'id', optionsForRequest.signal);
+    const publicVersion = typeof value === 'object' && typeof value?.publicVersion === 'string'
+      ? value.publicVersion
+      : null;
+    const ownershipVerified = optionsForRequest.ownershipVerified === true;
+    if (!ownershipVerified && !publicVersion) {
+      throw Object.assign(new Error('Search removal requires verified Blob ownership or a source ETag.'), {
+        code: 'search_ownership_unverified'
+      });
+    }
     const requestWithSignal = (requestCredential, requestEndpoint, path, requestOptions = {}) => request(
       requestCredential,
       requestEndpoint,
       path,
       { ...requestOptions, signal: optionsForRequest.signal }
     );
-    const result = existing.length
-      ? await applyIndexActions(
-          existing.map((document) => ({ '@search.action': 'delete', id: document.id })),
+    const deletedIds = new Set();
+    let quietReads = 0;
+    for (let attempt = 0; attempt < SEARCH_REMOVE_MAX_READS; attempt += 1) {
+      const visible = await documentsForSlug(slug, 'id,sourceEtag', optionsForRequest.signal);
+      const removable = ownershipVerified
+        ? visible
+        : visible.filter((document) => document.sourceEtag === publicVersion);
+      if (removable.length) {
+        quietReads = 0;
+        removable.forEach((document) => deletedIds.add(document.id));
+        await applyIndexActions(
+          removable.map((document) => ({ '@search.action': 'delete', id: document.id })),
           { credential, endpoint, indexName, request: requestWithSignal, wait }
-        )
-      : { deleted: 0 };
-    const remaining = await documentsForSlug(slug, 'id', optionsForRequest.signal);
-    if (remaining.length) throw new Error('Published Search documents could not be removed completely.');
-    return result;
+        );
+      } else {
+        quietReads += 1;
+        if (quietReads >= SEARCH_REMOVE_QUIET_READS) {
+          return { deleted: deletedIds.size, uploaded: 0 };
+        }
+      }
+      if (attempt + 1 < SEARCH_REMOVE_MAX_READS) {
+        await verificationDelay(
+          SEARCH_VERIFY_DELAYS_MS[Math.min(attempt, SEARCH_VERIFY_DELAYS_MS.length - 1)],
+          optionsForRequest.signal
+        );
+      }
+    }
+    throw Object.assign(new Error('Published Search documents could not be removed completely.'), {
+      code: 'search_verification_failed'
+    });
   }
 
   async function prepare(input, optionsForRequest = {}) {
@@ -297,17 +391,41 @@ function createAzureSubmissionIndexer(options = {}) {
       lastModified: new Date(0)
     }, value.markdown);
     if (!rawDocuments.length) throw new Error('Publication produced no searchable sections.');
+    const checkpoint = optionsForRequest.checkpoint;
+    const resumable = checkpoint
+      && checkpoint.contentHash === value.contentHash
+      && checkpoint.total === rawDocuments.length
+      && Array.isArray(checkpoint.vectors)
+      && checkpoint.vectors.length <= rawDocuments.length
+      && checkpoint.vectors.every(validVector);
+    const vectors = resumable
+      ? checkpoint.vectors.map((vector) => vector.slice())
+      : [];
     if (typeof optionsForRequest.onProgress === 'function') {
-      await optionsForRequest.onProgress(0, rawDocuments.length);
+      await optionsForRequest.onProgress(vectors.length, rawDocuments.length);
     }
-    const documents = await embedDocuments(rawDocuments, embeddingClient, {
-      batchSize: 1,
-      onProgress: optionsForRequest.onProgress,
-      signal: optionsForRequest.signal
-    });
+    for (let index = vectors.length; index < rawDocuments.length; index += 1) {
+      const [document] = await embedDocuments([rawDocuments[index]], embeddingClient, {
+        batchSize: 1,
+        signal: optionsForRequest.signal
+      });
+      vectors.push(document.contentVector.slice());
+      const durableCheckpoint = {
+        contentHash: value.contentHash,
+        total: rawDocuments.length,
+        vectors: vectors.map((vector) => vector.slice())
+      };
+      if (typeof optionsForRequest.onCheckpoint === 'function') {
+        await optionsForRequest.onCheckpoint(durableCheckpoint);
+      }
+      if (typeof optionsForRequest.onProgress === 'function') {
+        await optionsForRequest.onProgress(vectors.length, rawDocuments.length);
+      }
+    }
     return Object.freeze({
       contentHash: value.contentHash,
-      vectors: Object.freeze(documents.map((document) => Object.freeze(document.contentVector.slice())))
+      total: rawDocuments.length,
+      vectors: Object.freeze(vectors.map((vector) => Object.freeze(vector.slice())))
     });
   }
 
@@ -334,34 +452,40 @@ function createAzureSubmissionIndexer(options = {}) {
         contentVector: prepared.vectors[index]
       }));
       const existing = await documentsForSlug(value.slug, 'id', optionsForRequest.signal);
-      const actions = [
-        ...existing.map((document) => ({ '@search.action': 'delete', id: document.id })),
-        ...documents.map((document) => ({ '@search.action': 'mergeOrUpload', ...document }))
-      ];
+      const expectedIds = new Set(documents.map((document) => document.id));
+      const staleActions = existing
+        .filter((document) => !expectedIds.has(document.id))
+        .map((document) => ({ '@search.action': 'delete', id: document.id }));
+      const uploadActions = documents.map((document) => ({ '@search.action': 'mergeOrUpload', ...document }));
       const requestWithSignal = (requestCredential, requestEndpoint, path, requestOptions = {}) => request(
         requestCredential,
         requestEndpoint,
         path,
         { ...requestOptions, signal: optionsForRequest.signal }
       );
-      const result = await applyIndexActions(actions, {
-        credential,
-        endpoint,
-        indexName,
-        request: requestWithSignal,
-        wait
+      const removed = staleActions.length
+        ? await applyIndexActions(staleActions, { credential, endpoint, indexName, request: requestWithSignal, wait })
+        : { deleted: 0, uploaded: 0 };
+      const uploaded = await applyIndexActions(uploadActions, {
+        credential, endpoint, indexName, request: requestWithSignal, wait
       });
-      const verified = await documentsForSlug(value.slug, 'id,sourceEtag', optionsForRequest.signal);
-      const expectedIds = new Set(documents.map((document) => document.id));
-      if (
-        verified.length !== expectedIds.size
-        || verified.some((document) => !expectedIds.has(document.id) || document.sourceEtag !== publicVersion)
-      ) {
+      const verified = await pollDocumentsForSlug(
+        value.slug,
+        'id,sourceEtag',
+        optionsForRequest.signal,
+        (stored) => stored.length === expectedIds.size
+          && stored.every((document) => expectedIds.has(document.id) && document.sourceEtag === publicVersion)
+      );
+      if (!verified) {
         throw Object.assign(new Error('Published Search documents could not be verified.'), {
           code: 'search_verification_failed'
         });
       }
-      return { ...result, verified: verified.length };
+      return {
+        deleted: removed.deleted,
+        uploaded: uploaded.uploaded,
+        verified: verified.length
+      };
   }
 
   return {

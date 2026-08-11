@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { assertSubmissionState, assertTransition } = require('./submission-state');
 
-const STORE_VERSION = 1;
+const STORE_VERSION = 2;
+const LEGACY_STORE_VERSION = 1;
 const ID_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
 
 class SubmissionRepositoryError extends Error {
@@ -59,10 +60,36 @@ function newStore() {
   return { version: STORE_VERSION, records: {}, slugReservations: {} };
 }
 
-function assertStore(value) {
+function migratePublication(record) {
+  const publication = record.publication && typeof record.publication === 'object'
+    ? clone(record.publication)
+    : {};
+  const legacyStatus = record.status;
+
+  if (!publication.status) {
+    if (legacyStatus === 'published') publication.status = 'published';
+    else if (legacyStatus === 'publishing') publication.status = 'verifying';
+    else if (['embedding_pending', 'embedding'].includes(legacyStatus)) publication.status = 'pending';
+    else if (legacyStatus === 'failed') publication.status = 'failed';
+    else publication.status = 'private';
+  }
+  if (!publication.indexingStatus) {
+    if (publication.indexed || legacyStatus === 'published') publication.indexingStatus = 'ready';
+    else if (legacyStatus === 'embedding') publication.indexingStatus = 'indexing';
+    else if (legacyStatus === 'embedding_pending') publication.indexingStatus = 'pending';
+    else if (record.failureCode === 'embedding_failed') publication.indexingStatus = 'failed';
+    else if (legacyStatus === 'publishing' && record.failureCode === 'cleanup_required') publication.indexingStatus = 'failed';
+    else publication.indexingStatus = 'not_started';
+  }
+  if (publication.publicWritten === undefined) publication.publicWritten = legacyStatus === 'published';
+  if (publication.indexed === undefined) publication.indexed = legacyStatus === 'published';
+  return publication;
+}
+
+function migrateStore(value) {
   if (
     !value
-    || value.version !== STORE_VERSION
+    || ![LEGACY_STORE_VERSION, STORE_VERSION].includes(value.version)
     || !value.records
     || typeof value.records !== 'object'
     || !value.slugReservations
@@ -70,14 +97,19 @@ function assertStore(value) {
   ) {
     throw new SubmissionRepositoryError('invalid_store', 'The submission store is invalid.', 500);
   }
-  for (const [id, record] of Object.entries(value.records)) {
+  const migrated = value.version === STORE_VERSION ? value : clone(value);
+  migrated.version = STORE_VERSION;
+  for (const [id, record] of Object.entries(migrated.records)) {
     if (!ID_PATTERN.test(id) || !record || record.id !== id) {
       throw new SubmissionRepositoryError('invalid_store', 'The submission store is invalid.', 500);
     }
     assertSubmissionState(record.status);
+    record.publication = migratePublication(record);
   }
-  return value;
+  return migrated;
 }
+
+const assertStore = migrateStore;
 
 function createRepositoryOperations(load, save, options = {}) {
   const now = typeof options.now === 'function' ? options.now : Date.now;
@@ -130,7 +162,12 @@ function createRepositoryOperations(load, save, options = {}) {
           publishedSlug: null,
           rejectionReason: null,
           failureCode: null,
-          publication: { publicWritten: false, indexed: false }
+          publication: {
+            status: 'private',
+            indexingStatus: 'not_started',
+            publicWritten: false,
+            indexed: false
+          }
         };
         store.records[id] = record;
         return record;
@@ -222,7 +259,12 @@ function createRepositoryOperations(load, save, options = {}) {
           updatedAt: timestamp,
           rejectionReason: null,
           failureCode: null,
-          publication: { publicWritten: false, indexed: false }
+          publication: {
+            status: 'private',
+            indexingStatus: 'not_started',
+            publicWritten: false,
+            indexed: false
+          }
         };
         store.records[id] = updated;
         return updated;
@@ -299,5 +341,6 @@ module.exports = {
   createFileSubmissionRepository,
   createInMemorySubmissionRepository,
   generateOpaqueId,
+  migrateStore,
   slugBase
 };

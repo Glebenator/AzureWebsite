@@ -87,3 +87,38 @@ test('reviewed-submission blobs remain absent until the durable publication flag
   assert.deepEqual((await repository.listArticles()).map((article) => article.slug), ['staged-note']);
   assert.equal(downloads, 1);
 });
+
+test('a readable reviewed submission is excluded from assistant evidence until AI indexing is ready', async () => {
+  const source = '---\ntitle: Public before AI\n---\n\n# Finding\n\nEvidence.\n';
+  let aiReady = false;
+  const containerClient = {
+    async *listBlobsFlat() {
+      yield {
+        name: 'public-before-ai.md',
+        metadata: { operationhash: 'operation-hash', source: 'reviewed-submission' },
+        properties: {
+          contentLength: Buffer.byteLength(source),
+          etag: 'public-etag',
+          lastModified: new Date('2026-08-04T12:00:00.000Z')
+        }
+      };
+    },
+    getBlobClient() {
+      return { async download() { return { readableStreamBody: Readable.from([source]) }; } };
+    }
+  };
+  const repository = createResearchRepository({
+    containerClient,
+    async publicationVisibility() { return true; },
+    async assistantEvidenceVisibility() { return aiReady; }
+  });
+
+  assert.deepEqual((await repository.listArticles()).map((article) => article.slug), ['public-before-ai']);
+  assert.equal(await repository.resolveEvidenceSource({
+    articleSlug: 'public-before-ai', headingId: 'finding', sourceEtag: 'public-etag'
+  }), null);
+  aiReady = true;
+  assert.equal((await repository.resolveEvidenceSource({
+    articleSlug: 'public-before-ai', headingId: 'finding', sourceEtag: 'public-etag'
+  })).title, 'Public before AI');
+});

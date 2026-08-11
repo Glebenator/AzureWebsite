@@ -93,6 +93,8 @@ function createSubmissionSystem(options = {}) {
     || (options.publishingEnabled === undefined && env.SUBMISSION_PUBLISHING_ENABLED === 'true');
   const publicStore = options.publicStore || (publishingEnabled ? createAzurePublicPublisher({ env }) : {
     async write() { throw createUnavailablePublishingError(); },
+    async verify() { throw createUnavailablePublishingError(); },
+    async verifyOwnership() { throw createUnavailablePublishingError(); },
     async remove() { return true; }
   });
   const searchIndex = options.searchIndex || (publishingEnabled ? createAzureSubmissionIndexer({ env }) : {
@@ -134,9 +136,27 @@ function createSubmissionSystem(options = {}) {
     if (typeof slug !== 'string' || metadata?.source !== 'reviewed-submission') return false;
     const records = await repository.listAll({ includeDeleted: true });
     const record = records.find((candidate) => candidate.publishedSlug === slug);
-    if (!record || record.status !== 'published') return false;
+    if (
+      !record
+      || record.status !== 'published'
+      || record.publication?.status !== 'published'
+      || !record.publication?.publicWritten
+    ) return false;
     const operationHash = crypto.createHash('sha256').update(record.id).digest('hex');
     return metadata.operationhash === operationHash;
+  };
+  system.aiVisibility = async ({ slug } = {}) => {
+    if (typeof slug !== 'string') return false;
+    const records = await repository.listAll({ includeDeleted: true });
+    const record = records.find((candidate) => candidate.publishedSlug === slug);
+    return Boolean(
+      record
+      && record.status === 'published'
+      && record.publication?.status === 'published'
+      && record.publication?.publicWritten
+      && record.publication?.indexingStatus === 'ready'
+      && record.publication?.indexed
+    );
   };
   if (
     (publishingEnabled || options.publication)

@@ -2,84 +2,84 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createPublicationProgress } = require('../services/submission-publication-progress');
+const { createPublicationProgress, elapsedLabel } = require('../services/submission-publication-progress');
 
-function record(status, publication = {}, overrides = {}) {
+function record(status, publication = {}, extra = {}) {
   return {
     status,
     updatedAt: '2026-08-04T12:00:00.000Z',
+    failureCode: null,
     publication,
-    ...overrides
+    ...extra
   };
 }
 
-test('publication progress reports exact embedding counts and bounded operational context', () => {
-  const progress = createPublicationProgress(record('embedding', {
-    attempt: 2,
+test('published Markdown and incomplete AI indexing are surfaced as separate states', () => {
+  const progress = createPublicationProgress(record('published', {
+    status: 'published',
+    publicWritten: true,
+    indexingStatus: 'indexing',
+    indexed: false,
     embeddingCompleted: 8,
-    embeddingStartedAt: '2026-08-04T12:00:00.000Z',
     embeddingTotal: 22,
-    lastProgressAt: '2026-08-04T12:03:00.000Z',
+    indexingStartedAt: '2026-08-04T12:00:00.000Z',
     substage: 'embedding'
-  }), Date.parse('2026-08-04T12:04:30.000Z'));
+  }), Date.parse('2026-08-04T12:02:00.000Z'));
 
-  assert.equal(progress.summary, 'Embedding 8 of 22 sections');
-  assert.equal(progress.detail, 'Attempt 2 · 4m elapsed');
-  assert.equal(progress.completed, 8);
-  assert.equal(progress.total, 22);
-  assert.equal(progress.checkpoints[0].status, 'active');
-  assert.equal(JSON.stringify(progress).includes('content'), false);
+  assert.equal(progress.publicationLabel, 'Published');
+  assert.equal(progress.aiLabel, 'Embedding 8 of 22 sections');
+  assert.equal(progress.publicAvailable, true);
+  assert.equal(progress.aiReady, false);
+  assert.equal(progress.active, true);
+  assert.deepEqual(progress.checkpoints.map((item) => item.status), ['complete', 'complete', 'active', 'pending']);
+  assert.match(progress.detail, /2m elapsed/);
 });
 
-test('publishing progress derives the active operation from persisted checkpoints', () => {
-  const writing = createPublicationProgress(record('publishing', {
-    embeddingsReadyAt: '2026-08-04T12:01:00.000Z',
-    publicWritten: false,
-    indexed: false,
-    substage: 'public_write'
+test('verified Search completion is the only AI-ready state', () => {
+  const ready = createPublicationProgress(record('published', {
+    status: 'published', publicWritten: true, indexingStatus: 'ready', indexed: true
   }));
-  assert.equal(writing.summary, 'Writing the public Markdown note');
+  const partial = createPublicationProgress(record('published', {
+    status: 'published', publicWritten: true, indexingStatus: 'ready', indexed: false
+  }));
 
-  const search = createPublicationProgress(record('publishing', {
-    embeddingsReadyAt: '2026-08-04T12:01:00.000Z',
-    publicWritten: true,
-    indexed: false,
-    substage: 'search_commit'
-  }));
-  assert.equal(search.summary, 'Updating and verifying Search');
-  assert.equal(search.checkpoints[1].status, 'complete');
-  assert.equal(search.checkpoints[2].status, 'active');
-
-  const activating = createPublicationProgress(record('publishing', {
-    publicWritten: true,
-    indexed: true,
-    substage: 'activating'
-  }));
-  assert.equal(activating.summary, 'Activating the published note');
-  assert.equal(activating.checkpoints[3].status, 'active');
+  assert.equal(ready.summary, 'Published · AI ready');
+  assert.equal(ready.aiReady, true);
+  assert.equal(partial.aiReady, false);
+  assert.notEqual(partial.aiLabel, 'AI ready');
 });
 
-test('cleanup and failure states remain actionable without exposing raw causes', () => {
-  const cleanup = createPublicationProgress(record('publishing', {
-    substage: 'cleanup'
-  }, { failureCode: 'cleanup_required' }));
-  assert.equal(cleanup.summary, 'Cleanup requires a retry');
-  assert.equal(cleanup.active, false);
-  assert.equal(cleanup.requiresAction, true);
-
-  const failed = createPublicationProgress(record('failed', {
-    embeddingCompleted: 4,
-    embeddingTotal: 12,
-    substage: 'failed'
-  }, { failureCode: 'embedding_failed' }));
-  assert.equal(failed.summary, 'Embedding stopped safely');
-  assert.equal(failed.checkpoints[0].status, 'failed');
-
-  const recovery = createPublicationProgress(record('publishing', {
-    embeddingCompleted: 2,
-    embeddingTotal: 10,
-    substage: 'embedding_recovery'
+test('index failure stays visibly published and retryable without raw error detail', () => {
+  const progress = createPublicationProgress(record('published', {
+    status: 'published',
+    publicWritten: true,
+    indexingStatus: 'failed',
+    indexingFailureCode: 'search_http_503',
+    indexed: false
   }));
-  assert.equal(recovery.summary, 'Embedding 2 of 10 sections');
-  assert.equal(recovery.checkpoints[0].status, 'active');
+
+  assert.equal(progress.summary, 'Published · AI indexing failed');
+  assert.equal(progress.publicAvailable, true);
+  assert.equal(progress.requiresAction, true);
+  assert.doesNotMatch(JSON.stringify(progress), /search_http_503/);
+});
+
+test('public write recovery is distinct from embedding and Search work', () => {
+  const progress = createPublicationProgress(record('publishing', {
+    status: 'failed', indexingStatus: 'pending', publicWritten: false
+  }, { failureCode: 'public_write_failed' }));
+
+  assert.equal(progress.publicationLabel, 'Publication failed');
+  assert.equal(progress.publicAvailable, false);
+  assert.equal(progress.requiresAction, true);
+  assert.equal(progress.active, false);
+  assert.equal(progress.checkpoints[0].status, 'failed');
+});
+
+test('elapsed labels remain bounded and human readable', () => {
+  const now = Date.parse('2026-08-04T14:02:03.000Z');
+  assert.equal(elapsedLabel('2026-08-04T14:01:58.000Z', now), '5s elapsed');
+  assert.equal(elapsedLabel('2026-08-04T13:58:00.000Z', now), '4m elapsed');
+  assert.equal(elapsedLabel('2026-08-04T12:00:00.000Z', now), '2h 2m elapsed');
+  assert.equal(elapsedLabel('not-a-date', now), '');
 });
