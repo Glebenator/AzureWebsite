@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="<%= description %>">
+    <meta name="theme-color" content="#faf8f2">
+    <title><%= title %></title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="stylesheet" href="/icons/regular/style.css">
+    <link rel="stylesheet" href="/stylesheets/style.css">
+    <link rel="stylesheet" href="/stylesheets/research-lab.css">
+    <script src="/javascripts/research-lab.js" defer></script>
+  </head>
+  <body class="research-lab-body">
+    <a class="skip-link" href="#main-content">Skip to workbench</a>
+
+    <main
+      id="main-content"
+      class="research-workbench"
+      data-research-lab
+      data-available="<%= available ? 'true' : 'false' %>"
+      aria-busy="false"
+    >
+      <header class="workbench-header">
+        <a class="workbench-wordmark" href="/">Gleb Gladyshevskiy</a>
+        <div class="workbench-context">
+          <span>Experimental · bounded</span>
+          <a href="/research">Research archive</a>
+        </div>
+      </header>
+
+      <div class="casefile-shell" data-casefile-shell>
+        <section class="casefile-stage" aria-live="polite">
+          <div class="casefile-empty" data-lab-empty>
+            <p class="casefile-kicker">One question · one casefile</p>
+            <h1>Ask directly, or open a research run.</h1>
+            <p>Each request starts clean. No transcript or prior-message history is kept in this workbench.</p>
+          </div>
+
+          <article class="casefile-result" hidden data-lab-result tabindex="-1">
+            <p class="casefile-kicker" data-lab-result-label>Research draft</p>
+            <h1 data-lab-result-title>Model response</h1>
+            <div class="casefile-answer" data-lab-answer></div>
+
+            <div class="casefile-verification" role="note" data-lab-result-note>
+              <i class="ph ph-info" aria-hidden="true"></i>
+              <p data-lab-qualification></p>
+            </div>
+
+            <details class="casefile-details" data-run-details>
+              <summary>
+                <span data-run-summary>Run details</span>
+                <i class="ph ph-caret-down" aria-hidden="true"></i>
+              </summary>
+              <div class="casefile-details-content">
+                <dl>
+                  <div><dt>Mode</dt><dd data-run-mode>—</dd></div>
+                  <div><dt>Model used</dt><dd data-lab-model>—</dd></div>
+                  <div><dt>Elapsed</dt><dd data-run-elapsed>—</dd></div>
+                  <div><dt>Request ID</dt><dd data-run-request-id>—</dd></div>
+                  <div><dt>Run ID</dt><dd data-run-correlation-id>—</dd></div>
+                </dl>
+                <ol class="casefile-run-log" data-run-log></ol>
+              </div>
+            </details>
+          </article>
+        </section>
+
+        <aside class="evidence-drawer" hidden data-evidence-drawer aria-labelledby="evidence-title">
+          <div class="evidence-drawer-header">
+            <h2 id="evidence-title" tabindex="-1">Evidence</h2>
+            <button type="button" aria-label="Close evidence" data-evidence-close>
+              <i class="ph ph-x" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <div class="evidence-navigation">
+            <button type="button" aria-label="Previous source" data-evidence-previous>
+              <i class="ph ph-arrow-left" aria-hidden="true"></i>
+            </button>
+            <p data-evidence-position>Source 1 of 1</p>
+            <button type="button" aria-label="Next source" data-evidence-next>
+              <i class="ph ph-arrow-right" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <div class="evidence-source">
+            <span class="evidence-status">Referenced source</span>
+            <h3 data-evidence-source-title>Source</h3>
+            <p class="evidence-metadata" data-evidence-metadata>English Wikipedia · Introductory extract</p>
+            <a href="#" target="_blank" rel="noopener noreferrer" data-evidence-source-link>
+              <span data-evidence-source-url></span>
+              <i class="ph ph-arrow-square-out" aria-hidden="true"></i>
+            </a>
+          </div>
+
+          <div class="evidence-excerpt">
+            <h3>Exact excerpt</h3>
+            <blockquote data-evidence-excerpt></blockquote>
+          </div>
+
+          <p class="evidence-explanation">This is the exact public-source extract supplied to the model. A resolved reference does not independently prove semantic support.</p>
+        </aside>
+      </div>
+
+      <section class="workbench-controls" aria-label="Independent request composer">
+        <div class="activity-capsule" hidden data-lab-activity role="status" aria-live="polite">
+          <i class="ph ph-circle-notch activity-spinner" aria-hidden="true"></i>
+          <strong data-activity-stage>Planning</strong>
+          <span class="activity-detail" data-activity-detail>Preparing an independent request</span>
+          <time data-activity-elapsed>00:00</time>
+          <button type="button" data-activity-cancel>Cancel</button>
+        </div>
+
+        <form class="workbench-composer" data-lab-form>
+          <label for="lab-query">Ask anything</label>
+          <textarea
+            id="lab-query"
+            name="query"
+            rows="2"
+            minlength="3"
+            maxlength="500"
+            placeholder="What do you want to know?"
+            aria-describedby="lab-input-hint lab-stateless-note"
+            <%= available ? '' : 'disabled' %>
+            required
+            data-lab-query
+          ></textarea>
+
+          <div class="model-toolbar">
+            <label for="lab-model">OpenRouter model</label>
+            <div class="model-picker">
+              <div class="model-select-shell">
+                <select
+                  id="lab-model"
+                  name="model"
+                  disabled
+                  aria-describedby="lab-model-status"
+                  data-model-select
+                  data-default-model="<%= model %>"
+                  data-ready="false"
+                >
+                  <option value="<%= model %>"><%= model %></option>
+                </select>
+                <i class="ph ph-caret-down" aria-hidden="true"></i>
+              </div>
+            </div>
+            <p id="lab-model-status" role="status" aria-live="polite" data-model-status>Loading current free models…</p>
+          </div>
+
+          <div class="composer-actions">
+            <fieldset class="mode-picker" data-mode-picker>
+              <legend class="visually-hidden">Response mode</legend>
+              <label>
+                <input type="radio" name="mode" value="direct" data-lab-mode>
+                <span><i class="ph ph-chat-circle" aria-hidden="true"></i>Direct answer</span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="research" checked data-lab-mode>
+                <span><i class="ph ph-books" aria-hidden="true"></i>Research mode</span>
+              </label>
+            </fieldset>
+
+            <div class="composer-submit">
+              <p id="lab-input-hint">Enter to send · Shift+Enter for a new line</p>
+              <button type="submit" <%= available ? '' : 'disabled' %> data-lab-submit>
+                <span data-lab-submit-label>Start new</span>
+                <small>independent question</small>
+              </button>
+              <button type="button" class="start-over" hidden data-start-over>
+                <i class="ph ph-arrow-counter-clockwise" aria-hidden="true"></i>
+                Start over
+              </button>
+            </div>
+          </div>
+
+          <p id="lab-stateless-note" class="stateless-note">Every request is independent. This page does not retain a conversation transcript.</p>
+        </form>
+
+        <% if (!available) { %>
+          <div class="workbench-unavailable" role="status">
+            <i class="ph ph-plugs" aria-hidden="true"></i>
+            <p><strong>Workbench unavailable.</strong> <%= configurationIssue %> See <code>.env.example</code> for local setup.</p>
+          </div>
+        <% } %>
+
+        <p class="workbench-error" hidden role="alert" data-lab-error></p>
+        <p class="workbench-error-reference" hidden data-lab-error-reference></p>
+      </section>
+    </main>
+  </body>
+</html>

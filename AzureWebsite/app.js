@@ -6,7 +6,9 @@ var logger = require('morgan');
 
 var indexRouter = require('./routes/index');
 var createResearchRouter = require('./routes/research');
+var createResearchLabRouter = require('./routes/research-lab').createResearchLabRouter;
 var createSubmissionsRouter = require('./routes/submissions').createSubmissionsRouter;
+var createDeepResearchHarness = require('./services/deep-research-harness').createDeepResearchHarness;
 var createResearchRepository = require('./services/research-repository').createResearchRepository;
 var createResearchAssistant = require('./services/research-assistant').createResearchAssistant;
 var createAzureResearchProvider = require('./services/azure-research-provider').createAzureResearchProvider;
@@ -40,6 +42,9 @@ function createApp(options) {
       : createAzureResearchProvider();
     researchAssistant = createResearchAssistant({ provider: researchProvider });
   }
+  var deepResearchHarness = options && Object.prototype.hasOwnProperty.call(options, 'deepResearchHarness')
+    ? options.deepResearchHarness
+    : createDeepResearchHarness();
 
   app.disable('x-powered-by');
   app.set('env', process.env.NODE_ENV === 'development' ? 'development' : 'production');
@@ -67,6 +72,9 @@ function createApp(options) {
     }
     next();
   });
+  app.use('/research-lab', createResearchLabRouter(deepResearchHarness, {
+    telemetryWrite: options && options.researchLabTelemetryWrite
+  }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
   app.use(cookieParser());
@@ -78,8 +86,8 @@ function createApp(options) {
     submissionSystem.onCorpusChanged = function() { researchRepository.clearCache(); };
   }
   if (submissionSystem && submissionSystem.publicationWorker) {
-    submissionSystem.publicationWorker.start().catch(function(error) {
-      console.error('Submission publication recovery could not start.', error);
+    submissionSystem.publicationWorker.start().catch(function() {
+      console.error(JSON.stringify({ event: 'submission_publication_recovery', status: 'failed' }));
     });
   }
   app.use('/', createSubmissionsRouter(submissionSystem));
@@ -94,10 +102,16 @@ function createApp(options) {
 
   // error handler
   app.use(function(err, req, res, next) {
-    var status = err.status || 500;
+    var status = Number.isInteger(err && err.status) && err.status >= 400 && err.status <= 599
+      ? err.status
+      : 500;
 
     if (status >= 500) {
-      console.error(err);
+      console.error(JSON.stringify({
+        event: 'http_request_error',
+        category: 'internal',
+        status: status
+      }));
     }
 
     res.status(status);

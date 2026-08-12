@@ -107,6 +107,20 @@ npm run check
 
 The tests are offline and inject credentials and HTTP clients. They cover research viewing, XSS sanitization, Search scoping, strict model output, citation validation, stale/cross-article evidence, provider failures, rate/cost guards, frontend timeouts, accessibility, and safe error rendering.
 
+## Experimental research lab
+
+`GET /research-lab` provides a bounded, stateless workbench for a direct answer or a single research run. Research mode searches only English Wikipedia, reads at most four introductory extracts, and makes one server-side OpenRouter call. It never follows user URLs, automates logins, submits external actions, or sends the OpenRouter credential to the browser. `OPENROUTER_RESEARCH_MODEL` defaults to `openrouter/free` and remains configurable because free-model availability, routing, and rate limits can change.
+
+Each `POST /research-lab/runs` receives server-owned request and run UUIDs in response headers, every NDJSON event, the UI run details, and content-free structured telemetry. The browser rejects missing or mismatched correlation before rendering. Citation validation reports syntax and reference-range validity separately from topic alignment and semantic support. A valid numeric reference means only that it resolves to retrieved evidence; it is never presented as independent semantic verification. A conservative lexical gate marks blatant off-topic output as unsupported.
+
+Ordinary telemetry uses a fixed allowlist of IDs, stages, statuses, durations, counts, bounded model identifiers, token-usage counts, HTTP status classes, and validation states. It does not include questions, prompts, evidence excerpts, answers, headers, cookies, network addresses, credentials, or upstream response bodies. Diagnostic content capture is separate, default-off, anomaly-only, size/count/TTL bounded, recursively redacted, and refused on production without an explicitly injected private store. Offline deterministic replay is available with:
+
+```sh
+npm run research:replay -- <private-capture.json>
+```
+
+The local recorder is development-only and writes outside the web root with private permissions. The Azure Blob store adapter requires an injected managed-identity container client; enabling Azure-backed capture also requires an approved retention/RBAC policy and storage lifecycle configuration. Production monitoring setup, Kusto queries, alert recommendations, and the operator workflow are documented in `docs/research-lab-observability.md`.
+
 ## User research submissions (local MVP)
 
 The app now contains a feature-gated Google-only submission workflow. It is disabled unless `RESEARCH_SUBMISSIONS_ENABLED=true`. When enabled, authenticated users can upload one UTF-8 `.md` file, inspect the same sanitized renderer used by the public library, submit it for review, and see only their own records. The sole administrator is matched only by the immutable Google `sub` configured in `ADMIN_GOOGLE_SUB`.

@@ -7,6 +7,7 @@
     "test": "node --test",
     "research:index": "node ./scripts/index-research.js",
     "research:evaluate": "node ./scripts/evaluate-retrieval.js",
+    "research:replay": "node ./scripts/replay-research-lab.js",
     "privacy:scan": "node ./scripts/privacy-scan.js",
     "check": "npm test && npm run privacy:scan"
   },

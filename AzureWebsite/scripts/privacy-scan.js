@@ -4,6 +4,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const ignoredDirectories = new Set(['.git', 'node_modules']);
 const ignoredContentFiles = new Set([path.resolve(__filename)]);
+const allowedExampleFiles = new Set(['.env.example']);
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf']);
 const forbiddenNames = [
   /^\.env(?:\..+)?$/,
@@ -39,7 +40,7 @@ for (const file of walk(root)) {
   const relativePath = path.relative(root, file);
   const baseName = path.basename(file);
 
-  if (forbiddenNames.some((pattern) => pattern.test(baseName))) {
+  if (!allowedExampleFiles.has(relativePath) && forbiddenNames.some((pattern) => pattern.test(baseName))) {
     findings.push(`${relativePath}: forbidden filename`);
   }
 

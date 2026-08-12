@@ -38,6 +38,7 @@ yarn-debug.log*
 .cache/
 .parcel-cache/
 .data/
+.private-research-captures/
 
 # OS
 Thumbs.db
